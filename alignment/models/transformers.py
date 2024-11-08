@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Union, Tuple
 import inspect
 import warnings
 from transformers import PreTrainedModel, PreTrainedTokenizer
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import DynamicCache, EncoderDecoderCache
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList
 from transformers.generation.utils import (
@@ -13,6 +13,7 @@ from transformers.generation.utils import (
     GenerateNonBeamOutput
 )
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+from transformers.integrations.fsdp import is_fsdp_managed_module
 from transformers.utils import is_torchdynamo_compiling, logging
 
 import numpy as np
@@ -216,7 +217,7 @@ class TransformersModel(PreTrainedModel):
 
         # 2. Set generation parameters if not already defined
         if synced_gpus is None:
-            synced_gpus = is_deepspeed_zero3_enabled() and dist.get_world_size() > 1
+            synced_gpus = (is_deepspeed_zero3_enabled() or is_fsdp_managed_module(self)) and dist.get_world_size() > 1
 
         logits_processor = (
             logits_processor if logits_processor is not None else LogitsProcessorList()
@@ -468,7 +469,14 @@ class TransformersModel(PreTrainedModel):
             # handle BC (convert by default if he user hasn't passed a cache AND the cache is of the default type)
             should_convert_cache = generation_config.return_legacy_cache
             is_user_defined_cache = user_defined_cache is not None
-            is_default_cache_type = isinstance(result.past_key_values, DynamicCache)
+            is_default_cache_type = (
+                type(result.past_key_values) == DynamicCache # noqa E721
+                or (
+                    isinstance(result.past_key_values, EncoderDecoderCache)
+                    and type(result.past_key_values.self_attention_cache) == DynamicCache  # noqa E721
+                    and type(result.past_key_values.cross_attention_cache) == DynamicCache  # noqa E721
+                )
+            )
             if not is_user_defined_cache and is_default_cache_type:
                 logger.warning_once(
                     "From v4.47 onwards, when a model cache is to be returned, `generate` will return a `Cache` "
