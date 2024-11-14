@@ -129,18 +129,16 @@ class PartialLexerFST(BasicLexer):
         self.final_map = {}
         self._build_fsm()
 
-
-
         self.map = None
         self._build_map()
 
     def _build_fsm(self):
-        terminal_map = {i:t for i, t in enumerate(self.terminals)}
+        terminals = sorted(self.terminals, key=lambda t: t.priority)
+        terminal_map = {i:t for i, t in enumerate(terminals)}
         regexps = [t.pattern.to_regexp() for t in terminal_map.values()]
         fsms = [parse_pattern(exp).to_fsm() for exp in regexps]
 
         fsm, final_state_map = _union(*fsms)
-        print(final_state_map)
 
         final_map = {}
         for state in fsm.finals:
