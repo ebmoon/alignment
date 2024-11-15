@@ -1,14 +1,9 @@
-from abc import abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Set, Self, Iterator, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Set, Iterable, Optional, Tuple
 
-from lark.exceptions import UnexpectedCharacters
 from lark.lexer import (
     BasicLexer,
-    Lexer,
-    LexerState,
-    LexerThread,
-    Token,
-    TerminalDef
+    TerminalDef,
+    Pattern
 )
 
 from interegular import FSM, parse_pattern
@@ -17,92 +12,7 @@ from interegular.fsm import Alphabet, OblivionError, State, TransitionKey, anyth
 if TYPE_CHECKING:
     from lark.lexer import LexerConf
 
-class PartialLexer(Lexer):
-    """
-    A base class for partial lexer,
-    that splits a prefix into a sequence of lexed tokens and unlexed suffix.
-    """
-
-    @abstractmethod
-    def partial_lex(
-        self, lexer_state: LexerState, parser_state: Any
-    ) -> Tuple[Iterator[Token], Optional[str]]:
-        """
-        Split a prefix into a sequence of lexed tokens and unlexed suffix
-
-        Args:
-            lexer_state (`LexerState`): the current state of partial lexer
-            parser_state (`Any`): an optional parser state for contextual lexer
-
-        Returns:
-            `Iterator[ParserToken]`: a pair of sequence of lexed tokens
-            `Optional[str]`: unlexed suffix
-        """
-
-class PartialLexerThread(LexerThread):
-    """
-    A thread that ties a partial lexer instance and a lexer state, 
-    to be used by the parser
-    """
-
-    def __init__(self, lexer: PartialLexer, lexer_state: LexerState):
-        super().__init__(lexer, lexer_state)
-
-    @classmethod
-    def from_text(cls, lexer: PartialLexer, text: str) -> Self:
-        return cls(lexer, LexerState(text))
-
-    def partial_lex(
-            self, parser_state: Any
-        ) -> Tuple[Iterator[Token], Optional[str]]:
-        """
-        Split a prefix into a sequence of lexed tokens and unlexed suffix
-
-        Args:
-            parser_state (`Any`): an optional parser state for contextual lexer
-
-        Returns:
-            `Iterator[ParserToken]`: a pair of sequence of lexed tokens
-            `Optional[str]`: unlexed suffix
-        """
-        return self.lexer.partial_lex(self.state, parser_state)
-
-class PartialBasicLexer(BasicLexer, PartialLexer):
-    """A non-contextual partial lexer"""
-
-    def __init__(self, conf: "LexerConf"):
-        super().__init__(conf)
-
-    def partial_lex(
-        self, lexer_state: LexerState, parser_state: Any = None
-    ) -> Tuple[Iterator[Token], Optional[str]]:
-        """
-        Split a prefix into a sequence of lexed tokens and unlexed suffix
-
-        Args:
-            lexer_state (`PartialLexerState`): the current state of partial lexer
-            parser_state (`Any`): an optional parser state (not used, for inheritance)
-
-        Return:
-            `Iterator[ParserToken]`: a pair of sequence of lexed tokens
-            `Optional[str]`: unlexed suffix
-        """
-        lexer_tokens = []
-        lexing_incomplete = False
-        try:
-            while lexer_state.line_ctr.char_pos < len(lexer_state.text):
-                token = self.next_token(lexer_state)
-                lexer_tokens.append(token)
-        except UnexpectedCharacters:
-            lexing_incomplete = True
-        except EOFError:
-            pass
-
-        if lexing_incomplete:
-            remainder = lexer_state.text[lexer_state.line_ctr.char_pos:]
-            return lexer_tokens, remainder
-        else:
-            return lexer_tokens, None
+END_TERMINAL = '$END'
 
 class PartialLexerFST(BasicLexer):
     """
@@ -114,13 +24,15 @@ class PartialLexerFST(BasicLexer):
     initial: State
     states: Set[State]
     finals: Set[State]
-    map: Dict[State, Dict[TransitionKey, Tuple[State, Iterable[TerminalDef]]]]
-    final_map: Dict[State, TerminalDef]
+    map: Dict[State, Dict[TransitionKey, Tuple[State, Iterable[str]]]]
+    final_map: Dict[State, str]
+    reachable_terminals: Dict[State, str]
 
-    def __init__(self, conf: "LexerConf", vocabulary: Dict[str, int]):
+    def __init__(self, conf: "LexerConf", vocabulary: Dict[str, int], eos_token_id: int):
         super().__init__(conf)
 
         self.vocabulary = vocabulary
+        self.eos_token_id = eos_token_id
 
         self.initial = None
         self.states = None
@@ -131,6 +43,36 @@ class PartialLexerFST(BasicLexer):
 
         self.map = None
         self._build_map()
+
+        self.reachables = None
+        self._compute_reachable_terminals()
+
+    def producible(self, terminals: Iterable[str]) -> Iterable[State]:
+        """
+        Compute a set of states that can produce one of target terminals
+
+        Args:
+            terminals(`Iterable[str]`): a set of target terminals 
+        
+        Return:
+            `Iterable[State]`: Set of states that can produce one of terminals
+        """
+        finals = [state for state, terminal in self.final_map.items() \
+                   if terminal in terminals]
+        seen = set(finals)
+        rev_reachable = finals.copy()
+
+        i = 0
+        while i < len(rev_reachable):
+            current = rev_reachable[i]
+            if current in self.map:
+                for transition in self.map[current]:
+                    next = self.map[current][transition]
+                    if next not in seen:
+                        rev_reachable.append(next)
+                        seen.add(next)
+            i += 1
+        return False
 
     def _build_fsm(self):
         terminals = sorted(self.terminals, key=lambda t: t.priority)
@@ -144,7 +86,7 @@ class PartialLexerFST(BasicLexer):
         for state in fsm.finals:
             # Assume lexer is not ambiguous (matched terminal is unique)
             terminal_idx = final_state_map[state]
-            final_map[state] = terminal_map[terminal_idx]
+            final_map[state] = terminal_map[terminal_idx].name
 
         self.fsm = fsm
         self.final_map = final_map
@@ -154,7 +96,7 @@ class PartialLexerFST(BasicLexer):
     
     def _longest_match(
             self, state: State, lexeme: str
-        ) -> Tuple[Optional[State], Optional[TerminalDef], str]:
+        ) -> Tuple[Optional[State], Optional[str], str]:
         """
         Find the longest match of the input from the state.
         There are three possible cases:
@@ -191,7 +133,7 @@ class PartialLexerFST(BasicLexer):
 
     def _compute_transition(
             self, state: State, token: str
-        ) -> Optional[Tuple[State, Iterable[TerminalDef]]]:
+        ) -> Optional[Tuple[State, Iterable[str]]]:
         terminals = []
         while len(token) > 0:
             state, terminal, token = self._longest_match(state, token)
@@ -202,18 +144,49 @@ class PartialLexerFST(BasicLexer):
                 terminals.append(terminal)
         return state, terminals
 
-    def _build_map(self) -> Dict[State, Dict[TransitionKey, Tuple[State, Iterable[TerminalDef]]]]:
+    def _build_map(self):
         fst_map = {state:{} for state in self.states}
 
         for state in self.states:
             for token, token_id in self.vocabulary.items():
-                transition = self._compute_transition(state, token)
-                if transition:
-                    fst_map[state][token_id] = transition
+                if token_id == self.eos_token_id and state in self.finals:
+                    fst_map[state][token_id] = (self.initial, [self.final_map[state], END_TERMINAL])
+                else:
+                    transition = self._compute_transition(state, token)
+                    if transition:
+                        fst_map[state][token_id] = transition
 
         self.map = fst_map
 
-    def follow(self, state: State, token_id: int) -> Optional[Tuple[State, Iterable[TerminalDef]]]:
+    def _compute_reachable_terminals_single(self, state: State) -> Iterable[str]:
+        # TODO: Avoid repetitive computation
+        seen = {state}
+        reachable = [state]
+        terminals = []
+        i = 0
+        while i < len(reachable):
+            current = reachable[i]
+            if current in self.finals:
+                terminals.append(self.final_map[current])
+            if current in self.fsm.map:
+                for transition in self.fsm.map[current]:
+                    next_state = self.fsm.map[current][transition]
+                    if next_state not in seen:
+                        reachable.append(next_state)
+                        seen.add(next_state)
+            i += 1
+
+        return terminals
+
+    def _compute_reachable_terminals(self):
+        reachable_terminals = {}
+
+        for state in self.states:
+            reachable_terminals[state] = self._compute_reachable_terminals_single(state)
+
+        self.reachable_terminals = reachable_terminals
+
+    def follow(self, state: State, token_id: int) -> Optional[Tuple[State, Iterable[str]]]:
         """
         Feed a token from a source state,
         return the destination state and corresponding output 

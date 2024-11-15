@@ -1,5 +1,6 @@
-from typing import TYPE_CHECKING, Callable, List, Optional, Union, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union, Tuple
 
+import copy
 import inspect
 import warnings
 from transformers import PreTrainedModel, PreTrainedTokenizer
@@ -7,6 +8,7 @@ from transformers.cache_utils import DynamicCache, EncoderDecoderCache
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList
 from transformers.generation.utils import (
+    GenerationConfig,
     GenerateOutput,
     GenerateDecoderOnlyOutput,
     GenerateEncoderDecoderOutput,
@@ -24,15 +26,9 @@ from torch.nn import functional as F
 
 from .tokenizer import Tokenizer
 
-from ..generation.configuration_utils import (
-    AlignmentGenerationConfig,
-    AlignmentGenerationMode,
-)
-
-from ..monitor.monitor import Monitor, MonitorState
+from ..monitor.monitor import Monitor
 from ..monitor.adaptive_utils import (
-    AdaptiveMaskTrie,
-    AdaptiveMaskTrieNode
+    AdaptiveMaskTrie
 )
 
 if TYPE_CHECKING:
@@ -88,22 +84,24 @@ class TransformerTokenizer(Tokenizer):
         return text
 
 
-class TransformersModel(PreTrainedModel):
+class TransformersModel:
     """A class for `transformers` models."""
 
     def __init__(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer,
+        tokenizer: PreTrainedTokenizer
     ):
         self.model = model
-        self.tokenizer = TransformerTokenizer(tokenizer)
+        self.tokenizer = tokenizer
+        self.device = model.device
+        self.config = model.config
 
     @torch.no_grad()
     def generate(
         self,
         inputs: Optional[torch.Tensor] = None,
-        generation_config: Optional[AlignmentGenerationConfig] = None,
+        generation_config: Optional[GenerationConfig] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         prefix_allowed_tokens_fn: Optional[
@@ -114,6 +112,9 @@ class TransformersModel(PreTrainedModel):
         streamer: Optional["BaseStreamer"] = None,
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+        monitor: Monitor = None,
+        jump_forward: bool = True,
+        adaptive_mask: bool = False,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -201,7 +202,7 @@ class TransformersModel(PreTrainedModel):
         """
 
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
-        self._validate_model_class()
+        self.model._validate_model_class()
         tokenizer = kwargs.pop(
             "tokenizer", None
         )  # Pull this out first, we only use it for stopping criteria
@@ -209,11 +210,11 @@ class TransformersModel(PreTrainedModel):
             "assistant_tokenizer", None
         )  # only used for assisted generation
 
-        generation_config, model_kwargs = self._prepare_generation_config(
+        generation_config, model_kwargs = self.model._prepare_generation_config(
             generation_config, **kwargs
         )
-        self._validate_model_kwargs(model_kwargs.copy())
-        self._validate_assistant(assistant_model, tokenizer, assistant_tokenizer)
+        self.model._validate_model_kwargs(model_kwargs.copy())
+        self.model._validate_assistant(assistant_model, tokenizer, assistant_tokenizer)
 
         # 2. Set generation parameters if not already defined
         if synced_gpus is None:
@@ -229,19 +230,19 @@ class TransformersModel(PreTrainedModel):
         )
 
         accepts_attention_mask = "attention_mask" in set(
-            inspect.signature(self.forward).parameters.keys()
+            inspect.signature(self.model.forward).parameters.keys()
         )
         requires_attention_mask = "encoder_outputs" not in model_kwargs
         kwargs_has_attention_mask = model_kwargs.get("attention_mask", None) is not None
 
         # 3. Define model inputs
-        inputs_tensor, model_input_name, model_kwargs = self._prepare_model_inputs(
+        inputs_tensor, model_input_name, model_kwargs = self.model._prepare_model_inputs(
             inputs, generation_config.bos_token_id, model_kwargs
         )
         batch_size = inputs_tensor.shape[0]
 
         device = inputs_tensor.device
-        self._prepare_special_tokens(
+        self.model._prepare_special_tokens(
             generation_config, kwargs_has_attention_mask, device=device
         )
 
@@ -266,7 +267,7 @@ class TransformersModel(PreTrainedModel):
         # 4. Define other model kwargs
         # decoder-only models with inputs_embeds forwarding must use caching (otherwise we can't detect whether we are
         # generating the first new token or not, and we only want to use the embeddings for the first new token)
-        if not self.config.is_encoder_decoder and model_input_name == "inputs_embeds":
+        if not self.model.config.is_encoder_decoder and model_input_name == "inputs_embeds":
             generation_config.use_cache = True
 
         if (
@@ -275,7 +276,7 @@ class TransformersModel(PreTrainedModel):
             and accepts_attention_mask
         ):
             model_kwargs["attention_mask"] = (
-                self._prepare_attention_mask_for_generation(
+                self.model._prepare_attention_mask_for_generation(
                     inputs_tensor, generation_config, model_kwargs
                 )
             )
@@ -287,15 +288,15 @@ class TransformersModel(PreTrainedModel):
             ):
                 raise ValueError("`attention_mask` passed to `generate` must be 2D.")
 
-        if self.config.is_encoder_decoder and "encoder_outputs" not in model_kwargs:
+        if self.model.config.is_encoder_decoder and "encoder_outputs" not in model_kwargs:
             # if model is encoder decoder encoder_outputs are created and added to `model_kwargs`
-            model_kwargs = self._prepare_encoder_decoder_kwargs_for_generation(
+            model_kwargs = self.model._prepare_encoder_decoder_kwargs_for_generation(
                 inputs_tensor, model_kwargs, model_input_name, generation_config
             )
 
         # 5. Prepare `input_ids` which will be used for auto-regressive generation
-        if self.config.is_encoder_decoder:
-            input_ids, model_kwargs = self._prepare_decoder_input_ids_for_generation(
+        if self.model.config.is_encoder_decoder:
+            input_ids, model_kwargs = self.model._prepare_decoder_input_ids_for_generation(
                 batch_size=batch_size,
                 model_input_name=model_input_name,
                 model_kwargs=model_kwargs,
@@ -310,7 +311,7 @@ class TransformersModel(PreTrainedModel):
             )
 
         if generation_config.token_healing:
-            input_ids = self.heal_tokens(input_ids, tokenizer)
+            input_ids = self.model.heal_tokens(input_ids, tokenizer)
 
         if streamer is not None:
             streamer.put(input_ids.cpu())
@@ -325,7 +326,7 @@ class TransformersModel(PreTrainedModel):
             kwargs.get("min_length") is None
             and generation_config.min_length is not None
         )
-        generation_config = self._prepare_generated_length(
+        generation_config = self.model._prepare_generated_length(
             generation_config=generation_config,
             has_default_max_length=has_default_max_length,
             has_default_min_length=has_default_min_length,
@@ -338,12 +339,12 @@ class TransformersModel(PreTrainedModel):
         # logit matrix. This can save a lot of memory during the first forward pass. Note that assisted decoding
         # dynamically overrides this value as it can need more than the last token logits
         if (
-            self._supports_num_logits_to_keep()
+            self.model._supports_num_logits_to_keep()
             and "num_logits_to_keep" not in model_kwargs
         ):
             model_kwargs["num_logits_to_keep"] = 1
 
-        self._validate_generated_length(
+        self.model._validate_generated_length(
             generation_config, input_ids_length, has_default_max_length
         )
 
@@ -362,10 +363,10 @@ class TransformersModel(PreTrainedModel):
         if (
             inputs_tensor.shape[1] != input_ids_length
             and model_input_name == "inputs_embeds"
-            and not self.config.is_encoder_decoder
+            and not self.model.config.is_encoder_decoder
         ):
             max_cache_length += inputs_tensor.shape[1]
-        self._prepare_cache_for_generation(
+        self.model._prepare_cache_for_generation(
             generation_config,
             model_kwargs,
             assistant_model,
@@ -374,27 +375,24 @@ class TransformersModel(PreTrainedModel):
             device,
         )
 
-        # 8. determine generation mode
-        generation_mode = generation_config.get_generation_mode(assistant_model)
-
         if streamer is not None and (generation_config.num_beams > 1):
             raise ValueError(
                 "`streamer` cannot be used with beam search (yet!). Make sure that `num_beams` is set to 1."
             )
 
-        if not is_torchdynamo_compiling() and self.device.type != input_ids.device.type:
+        if not is_torchdynamo_compiling() and self.model.device.type != input_ids.device.type:
             warnings.warn(
                 "You are calling .generate() with the `input_ids` being on a device type different"
                 f" than your model's device. `input_ids` is on {input_ids.device.type}, whereas the model"
-                f" is on {self.device.type}. You may experience unexpected behaviors or slower generation."
+                f" is on {self.model.device.type}. You may experience unexpected behaviors or slower generation."
                 " Please make sure that you have put `input_ids` to the"
-                f" correct device by calling for example input_ids = input_ids.to('{self.device.type}') before"
+                f" correct device by calling for example input_ids = input_ids.to('{self.model.device.type}') before"
                 " running `.generate()`.",
                 UserWarning,
             )
 
         # 9. prepare logits processors and stopping criteria
-        prepared_logits_processor = self._get_logits_processor(
+        prepared_logits_processor = self.model._get_logits_processor(
             generation_config=generation_config,
             input_ids_seq_length=input_ids_length,
             encoder_input_ids=inputs_tensor,
@@ -405,7 +403,7 @@ class TransformersModel(PreTrainedModel):
             negative_prompt_ids=negative_prompt_ids,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
         )
-        prepared_stopping_criteria = self._get_stopping_criteria(
+        prepared_stopping_criteria = self.model._get_stopping_criteria(
             generation_config=generation_config,
             stopping_criteria=stopping_criteria,
             tokenizer=tokenizer,
@@ -416,18 +414,18 @@ class TransformersModel(PreTrainedModel):
         model_kwargs["use_cache"] = generation_config.use_cache
 
         # 10. go into different generation modes
-        if generation_mode == AlignmentGenerationMode.MONITOR_GUIDED:
+        if monitor:
             if generation_config.num_return_sequences > 1:
                 raise ValueError(
-                    "num_return_sequences has to be 1 when doing checker guided generate, "
+                    "num_return_sequences has to be 1 when doing monitor guided generate, "
                     f"but is {generation_config.num_return_sequences}."
                 )
             if batch_size > 1:
                 raise ValueError(
-                    "checker guided generate is only supported for batch_size = 1"
+                    "monitor guided generate is only supported for batch_size = 1"
                 )
             if not model_kwargs["use_cache"]:
-                raise ValueError("checker guided generate requires `use_cache=True`")
+                raise ValueError("monitor guided generate requires `use_cache=True`")
             if generation_config.cache_implementation in [
                 "static",
                 "hybrid",
@@ -436,8 +434,8 @@ class TransformersModel(PreTrainedModel):
                 raise ValueError(
                     "assisted generate is not supported with Static cache classes`"
                 )
-            if self._is_stateful:
-                # In checker guided generation we need the ability to confirm whether the model would pick certain tokens,
+            if self.model._is_stateful:
+                # In monitor guided generation we need the ability to confirm whether the model would pick certain tokens,
                 # which is not possible with stateful models (they can't reset to a previous subset of generated text)
                 raise ValueError(
                     f"assisted generation is not supported with stateful models, such as {self.__class__.__name__}"
@@ -445,7 +443,9 @@ class TransformersModel(PreTrainedModel):
 
             result = self._monitor_guided_decoding(
                 input_ids,
-                checker=generation_config.checker,
+                monitor=monitor,
+                jump_forward=jump_forward,
+                adaptive_mask=adaptive_mask,
                 logits_processor=prepared_logits_processor,
                 stopping_criteria=prepared_stopping_criteria,
                 generation_config=generation_config,
@@ -492,26 +492,28 @@ class TransformersModel(PreTrainedModel):
     def _monitor_guided_decoding(
         self,
         input_ids: torch.LongTensor,
-        checker: Monitor,
+        monitor: Monitor,
+        jump_forward: bool,
+        adaptive_mask: bool,
         logits_processor: LogitsProcessorList,
         stopping_criteria: StoppingCriteriaList,
-        generation_config: AlignmentGenerationConfig,
+        generation_config: GenerationConfig,
         synced_gpus: bool,
         streamer: Optional["BaseStreamer"],
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
         Generates sequences of token ids for models with a language modeling head using **greedy decoding** or
-        **sample** (depending on `do_sample`), guided by external checker. Checker-guided generation is an extension
+        **sample** (depending on `do_sample`), guided by external monitor. Monitor-guided generation is an extension
         of constrained-decoding. Can be used for text-decoder, text-to-text, speech-to-text, and vision-to-text
         models.
 
         Parameters:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
                 The sequence used as a prompt for the generation.
-            checker (`Checker`):
-                A derived instance of [`Checker`] that defines which sequences are invalid. For
-                more information, the documentation of [`Checker`] should be read.
+            monitor (`Monitor`):
+                A derived instance of [`Monitor`] that defines which sequences are invalid. For
+                more information, the documentation of [`Monitor`] should be read.
             logits_processor (`LogitsProcessorList`):
                 An instance of [`LogitsProcessorList`]. List of instances of class derived from [`LogitsProcessor`]
                 used to modify the prediction scores of the language modeling head applied at each generation step.
@@ -548,9 +550,6 @@ class TransformersModel(PreTrainedModel):
         has_eos_stopping_criteria = any(hasattr(criteria, "eos_token_id") for criteria in stopping_criteria)
         do_sample = generation_config.do_sample
 
-        jump_forward = generation_config.jump_forward
-        adaptive_mask = generation_config.adaptive_mask
-
         # if the mask is adaptive, initialize adaptive trie
         if adaptive_mask:
             adaptive_trie = generation_config.adaptive_trie if generation_config.adaptive_trie else AdaptiveMaskTrie()
@@ -564,7 +563,7 @@ class TransformersModel(PreTrainedModel):
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
-        if return_dict_in_generate and self.config.is_encoder_decoder:
+        if return_dict_in_generate and self.model.config.is_encoder_decoder:
             encoder_attentions = model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -573,22 +572,32 @@ class TransformersModel(PreTrainedModel):
         # keep track of which sequences are already finished
         batch_size = input_ids.shape[0]
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
-        model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
+        model_kwargs = self.model._get_initial_cache_position(input_ids, model_kwargs)
+
+        vocab_size = len(self.tokenizer.get_vocab())
 
         this_peer_finished = False
         is_first_iteration = True # to preserve the same API in the output as other generation methods
-        while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
+        while self.model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
 
             # TODO: Implement filtering for batch
-            # 1. Check acceptable next tokens by checker
-            acceptance = checker.filter_vocab(input_ids)
-            acceptance_sequence = acceptance.clone()[:, None, :]
+            # 1. Check acceptable next tokens by monitor
+            acceptance_batch = monitor.filter_vocab(input_ids)
+            acceptance = torch.full((batch_size, 1, vocab_size), False)
+            for i in range(batch_size):
+                acceptance[i, 0, acceptance_batch[i]] = True
+            acceptance_sequence = acceptance.clone()
 
             # 2. Jump-forward if only a single next token is acceptable
             jumped_len = 0
-            while jump_forward and input_ids.shape[-1] < max_length - 1 and acceptance.shape[-1] == 1:
-                jumped_input_ids = torch.cat([input_ids, acceptance], dim=-1)
+            while jump_forward and input_ids.shape[-1] < max_length - 1 \
+                and all(len(acceptance) == 1 for acceptance in acceptance_batch):
+
+                ids = torch.LongTensor([acceptance[0] for acceptance in acceptance_batch])
+                acceptance_tensor_col = ids.reshape(-1, 1)
+
+                jumped_input_ids = torch.cat([input_ids, acceptance_tensor_col], dim=-1)
                 is_done = stopping_criteria(jumped_input_ids, None)
 
                 # 2.1. Do not apply jump-forward for the last token
@@ -596,55 +605,52 @@ class TransformersModel(PreTrainedModel):
                 if not is_done:
                     input_ids = jumped_input_ids
 
-                    checker.update(acceptance[:, 0])
-                    acceptance = checker.filter_vocab(input_ids)
+                    monitor.update(ids)
+                    acceptance_batch = monitor.filter_vocab(input_ids)
+                    acceptance = torch.full((batch_size, 1, vocab_size), False)
+                    for i in range(batch_size):
+                        acceptance[i, 0, acceptance_batch[i]] = True
                     acceptance_sequence = torch.concat([acceptance_sequence, acceptance], dim=1)
 
                     jumped_len += 1
+                else:
+                    break
 
             # prepare model inputs
-            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs = self.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            if "num_logits_to_keep" in model_inputs:
+                model_inputs["num_logits_to_keep"] = jumped_len + 1
 
             # prepare variable output controls (note: some models won't accept all output controls)
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
 
             # forward pass to get next token
-            outputs = self(**model_inputs, return_dict=True)
+            outputs = self.model(**model_inputs)
 
             # synced_gpus: don't waste resources running the code we don't need; kwargs must be updated before skipping
-            model_kwargs = self._update_model_kwargs_for_generation(
+            model_kwargs = self.model._update_model_kwargs_for_generation(
                 outputs,
                 model_kwargs,
-                is_encoder_decoder=self.config.is_encoder_decoder,
+                is_encoder_decoder=self.model.config.is_encoder_decoder,
             )
             if synced_gpus and this_peer_finished:
                 continue
 
             # 3. Process the new logits
             # .float() is needed to retain precision for later logits manipulations
-            new_logits = outputs.logits[:, cur_len:, :].float()
+            new_logits = outputs.logits[:, -jumped_len - 1:].float()
             new_logits = new_logits.to(input_ids.device)
             next_token_logits = new_logits.clone()
 
-            # 3.1. If the masking is adaptive, get mask from trie
-            vocab_size = new_logits.shape(-1)
+            # 3.1. Apply binary mask to logits
+            new_logits[~acceptance_sequence] = -float('inf')
+            
+            # 3.2. If mask is adaptive, apply adaptive mask for the last token
             if adaptive_mask:
-                # Apply binary mask for jump-forwarded tokens
-                for i in range(jumped_len):
-                    acceptance = acceptance_sequence[:, i, :]
-                    new_logits[:, i, ~acceptance] = -float('inf')
-
-                # Apply adaptive mask for the last token
                 mask = current_trie_node.get_mask(batch_size, vocab_size)
                 mask = mask.to(input_ids.device)
                 new_logits[:, -1, :] += mask
-
-            # 3.2. If the masking is not adaptive, apply binary mask to logits.
-            else:
-                for i in range(jumped_len + 1):
-                    acceptance = acceptance_sequence[:, i, :]
-                    new_logits[:, i, ~acceptance] = -float('inf')
 
             # process logits by logits processors
             if len(logits_processor) > 0:
@@ -653,11 +659,11 @@ class TransformersModel(PreTrainedModel):
 
             # token selection
             if do_sample:
-                probs = nn.functional.softmax(new_logits, dim=-1)
+                probs = nn.functional.softmax(new_logits[:, -1, :], dim=-1)
                 # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
                 next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
             else:
-                next_tokens = torch.argmax(new_logits, dim=-1)
+                next_tokens = torch.argmax(new_logits[:, -1, :], dim=-1)
 
             # finished sentences should have their next token be a padding token
             if has_eos_stopping_criteria:
@@ -669,6 +675,9 @@ class TransformersModel(PreTrainedModel):
                 streamer.put(next_tokens.cpu())
             new_cur_len = input_ids.shape[-1]
 
+            # 4. Update monitor state by selected next tokens
+            monitor.update(next_tokens)
+
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 newly_added_length = jumped_len + 1
@@ -679,7 +688,7 @@ class TransformersModel(PreTrainedModel):
 
                 newly_added_length = new_cur_len if is_first_iteration else newly_added_length
                 if output_attentions:
-                    if self.config.is_encoder_decoder:
+                    if self.model.config.is_encoder_decoder:
                         cross_attentions = _split_model_outputs(
                             cross_attentions, outputs.cross_attentions, cur_len, newly_added_length
                         )
@@ -700,7 +709,7 @@ class TransformersModel(PreTrainedModel):
                             is_decoder_attention=True,
                         )
                 if output_hidden_states:
-                    if self.config.is_encoder_decoder:
+                    if self.model.config.is_encoder_decoder:
                         decoder_hidden_states = _split_model_outputs(
                             decoder_hidden_states, outputs.decoder_hidden_states, cur_len, newly_added_length
                         )
@@ -720,7 +729,7 @@ class TransformersModel(PreTrainedModel):
         if streamer is not None:
             streamer.end()
 
-        if return_dict_in_generate and self.config.is_encoder_decoder:
+        if return_dict_in_generate and self.model.config.is_encoder_decoder:
             return GenerateEncoderDecoderOutput(
                 sequences=input_ids,
                 scores=scores,

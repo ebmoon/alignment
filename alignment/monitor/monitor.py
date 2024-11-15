@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 import torch
 
@@ -12,7 +12,7 @@ class MonitorState:
 class Monitor:
     """Abstract base class for all monitors that can be applied during monitor-guided generation."""
 
-    def filter_vocab(self, input_ids: torch.LongTensor) -> torch.LongTensor:
+    def filter_vocab(self, input_ids: torch.LongTensor) -> Iterable[torch.LongTensor]:
         """
         Filter out next tokens for the current input that do not pass the monitor.
 
@@ -21,15 +21,14 @@ class Monitor:
                 Indices of input sequence tokens in the vocabulary. [What are input IDs?](../glossary#input-ids)
 
         Return:
-            `torch.LongTensor` of shape `(batch_size, num_accepted_tokens)` containing indices of
+            `torch.LongTensor`s of shape `(num_accepted_tokens)` containing indices of
             acceptable next tokens for each batch.
         """
         raise NotImplementedError(
             f"{self.__class__} is an abstract class. Only classes inheriting this class can call `filter_vocab`."
         )
 
-
-    def update(self, next_tokens: torch.LongTensor) -> MonitorState:
+    def update(self, next_tokens: torch.LongTensor) -> Iterable[MonitorState]:
         """
         Update the state of the monitor based on the selected next tokens.
 
@@ -43,3 +42,8 @@ class Monitor:
         raise NotImplementedError(
             f"{self.__class__} is an abstract class. Only classes inheriting this class can call `update`."
         )
+
+    def reset(self):
+        """
+        Reset the monitor state to the initial state
+        """

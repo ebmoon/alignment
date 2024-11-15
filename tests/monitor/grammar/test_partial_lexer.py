@@ -33,9 +33,9 @@ class PartialLexerFSTTest(TestCase):
         """
 
         lexer_conf = Lark(calc_grammar, parser='lalr').lexer_conf
-        vocabulary = {'---':1, '-':3, 'aa':4, 'a':5, 'abb-':6, ' ':7, 'a ':8, '---a':9}
+        vocabulary = {'---':1, '-':3, 'aa':4, 'a':5, 'abb-':6, ' ':7, 'a ':8, '---a':9, 'EOS':10}
 
-        fst = PartialLexerFST(lexer_conf, vocabulary)
+        fst = PartialLexerFST(lexer_conf, vocabulary, eos_token_id=10)
 
         state_1, out = fst.follow(fst.initial, vocabulary['-'])
         self.assertEqual(len(out), 0)
@@ -81,9 +81,9 @@ class PartialLexerFSTTest(TestCase):
         """
 
         lexer_conf = Lark(grammar, parser='lalr').lexer_conf
-        vocabulary = {'if ':1, 'iff':2, 'if':3, ' ':4}
+        vocabulary = {'if ':1, 'iff':2, 'if':3, ' ':4, 'EOS':5}
 
-        fst = PartialLexerFST(lexer_conf, vocabulary)
+        fst = PartialLexerFST(lexer_conf, vocabulary, eos_token_id=5)
 
         state_1, out = fst.follow(fst.initial, vocabulary['iff'])
         self.assertEqual(len(out), 0)
@@ -99,6 +99,4 @@ class PartialLexerFSTTest(TestCase):
 
         _, out = fst.follow(state_1, vocabulary[' '])
         self.assertEqual(len(out), 1)
-
-        print([(t.name, t.priority) for t in lexer_conf.terminals])
         self.assertEqual(out[0].name, 'IF')
