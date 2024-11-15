@@ -232,7 +232,8 @@ class TransformersModel:
         accepts_attention_mask = "attention_mask" in set(
             inspect.signature(self.model.forward).parameters.keys()
         )
-        requires_attention_mask = "encoder_outputs" not in model_kwargs
+        requires_attention_mask = ("encoder_outputs" not in model_kwargs
+                                   or generation_config.cache_implementation == "static")
         kwargs_has_attention_mask = model_kwargs.get("attention_mask", None) is not None
 
         # 3. Define model inputs
@@ -420,20 +421,8 @@ class TransformersModel:
                     "num_return_sequences has to be 1 when doing monitor guided generate, "
                     f"but is {generation_config.num_return_sequences}."
                 )
-            if batch_size > 1:
-                raise ValueError(
-                    "monitor guided generate is only supported for batch_size = 1"
-                )
             if not model_kwargs["use_cache"]:
                 raise ValueError("monitor guided generate requires `use_cache=True`")
-            if generation_config.cache_implementation in [
-                "static",
-                "hybrid",
-                "sliding_window",
-            ]:
-                raise ValueError(
-                    "assisted generate is not supported with Static cache classes`"
-                )
             if self.model._is_stateful:
                 # In monitor guided generation we need the ability to confirm whether the model would pick certain tokens,
                 # which is not possible with stateful models (they can't reset to a previous subset of generated text)
@@ -645,7 +634,7 @@ class TransformersModel:
 
             # 3.1. Apply binary mask to logits
             new_logits[~acceptance_sequence] = -float('inf')
-            
+
             # 3.2. If mask is adaptive, apply adaptive mask for the last token
             if adaptive_mask:
                 mask = current_trie_node.get_mask(batch_size, vocab_size)

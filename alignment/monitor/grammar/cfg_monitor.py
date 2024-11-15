@@ -80,8 +80,6 @@ class CFGMonitor(Monitor):
         vocabulary = tokenizer.get_vocab()
         eos_token_id = tokenizer.eos_token_id
 
-        print(eos_token_id)
-
         return CFGMonitor(grammar_str, vocabulary, eos_token_id, num_batch)
 
     def _initialize_state(self):

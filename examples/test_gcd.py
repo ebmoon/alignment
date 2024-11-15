@@ -33,6 +33,7 @@ model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
 model = TransformersModel(model, tokenizer)
 
+
 # Load EBNF grammar
 # grammar_str = """
 #     ?start: sum
@@ -69,10 +70,15 @@ logits_processors = LogitsProcessorList([inf_nan_remove_processor])
 
 # Tokenize prompt into ids
 prompt = "Generate any equation"
-input_ids = tokenizer(
+decode_output = tokenizer(
     [prompt], add_special_tokens=False, return_tensors="pt", padding=True
-)["input_ids"]
+)
+print(decode_output)
+input_ids = decode_output["input_ids"]
 input_ids = input_ids.to(model.device)
+
+attention_mask = decode_output["attention_mask"]
+attention_mask.to(model.device)
 
 monitor = CFGMonitor.from_tokenizer(grammar_str, tokenizer)
 
@@ -94,6 +100,8 @@ for _ in tqdm(range(NUM_ITER), desc="Running Inference"):
         num_return_sequences=1,
         return_dict_in_generate=True,
         output_scores=True,
+        cache_implementation="static",
+        attention_mask=attention_mask,
         jump_forward=False,
         monitor=monitor
     )
