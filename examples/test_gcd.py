@@ -73,7 +73,6 @@ prompt = "Generate any equation"
 decode_output = tokenizer(
     [prompt], add_special_tokens=False, return_tensors="pt", padding=True
 )
-print(decode_output)
 input_ids = decode_output["input_ids"]
 input_ids = input_ids.to(model.device)
 
@@ -100,9 +99,9 @@ for _ in tqdm(range(NUM_ITER), desc="Running Inference"):
         num_return_sequences=1,
         return_dict_in_generate=True,
         output_scores=True,
-        cache_implementation="static",
+#        cache_implementation="static",
         attention_mask=attention_mask,
-        jump_forward=False,
+        # jump_forward=False,
         monitor=monitor
     )
 

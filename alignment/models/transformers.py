@@ -14,6 +14,10 @@ from transformers.generation.utils import (
     GenerateEncoderDecoderOutput,
     GenerateNonBeamOutput
 )
+from transformers.generation.candidate_generator import (
+    _prepare_attention_mask,
+    _prepare_token_type_ids
+)
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.integrations.fsdp import is_fsdp_managed_module
 from transformers.utils import is_torchdynamo_compiling, logging
@@ -605,8 +609,23 @@ class TransformersModel:
                 else:
                     break
 
-            # prepare model inputs
-            model_inputs = self.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            # 3. prepare model inputs
+            candidate_kwargs = copy.copy(model_kwargs)
+            candidate_kwargs = _prepare_attention_mask(
+                candidate_kwargs, input_ids.shape[1], self.config.is_encoder_decoder
+            )
+            candidate_kwargs = _prepare_token_type_ids(candidate_kwargs, input_ids.shape[1])
+
+            # set cache position must be set to get multiple logits
+            if "cache_position" in candidate_kwargs:
+                candidate_kwargs["cache_position"] = torch.cat(
+                    (
+                        candidate_kwargs["cache_position"],
+                        torch.arange(cur_len, cur_len + jumped_len, device=input_ids.device, dtype=torch.long),
+                    ),
+                    dim=0,
+                )
+            model_inputs = self.model.prepare_inputs_for_generation(input_ids, **candidate_kwargs)
             if "num_logits_to_keep" in model_inputs:
                 model_inputs["num_logits_to_keep"] = jumped_len + 1
 
@@ -622,6 +641,7 @@ class TransformersModel:
                 outputs,
                 model_kwargs,
                 is_encoder_decoder=self.model.config.is_encoder_decoder,
+                num_new_tokens=jumped_len + 1
             )
             if synced_gpus and this_peer_finished:
                 continue
