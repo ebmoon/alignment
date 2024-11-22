@@ -3,6 +3,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, StaticCache
 from transformers.generation.logits_process import LogitsProcessorList, InfNanRemoveLogitsProcessor
 from alignment.monitor.grammar import CFGMonitor
+from alignment.monitor.adaptive_utils import AdaptiveMaskTrie
 from alignment.models import TransformersModel
 
 NUM_ITER = 50
@@ -83,6 +84,7 @@ attention_mask = decode_output["attention_mask"]
 attention_mask.to(model.device)
 
 monitor = CFGMonitor.from_tokenizer(grammar_str, tokenizer)
+adaptive_mask = AdaptiveMaskTrie(batch_size = input_ids.shape[0])
 
 # Inference Loop
 outputs = []
@@ -105,7 +107,8 @@ for _ in tqdm(range(NUM_ITER), desc="Running Inference"):
         cache_implementation="static",
         attention_mask=attention_mask,
         # jump_forward=False,
-        monitor=monitor
+        monitor=monitor,
+        adaptive_mask=adaptive_mask
     )
 
     # Detokenize generate output

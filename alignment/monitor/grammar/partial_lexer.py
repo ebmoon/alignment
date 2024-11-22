@@ -208,11 +208,8 @@ class PartialLexerFST(BasicLexer):
 # https://github.com/MegaIng/interegular
 
 def _union(*fsms: FSM) -> Tuple[FSM, Dict[State, Dict[int, State]]]:
-    return _parallel(fsms)
-
-def _parallel(fsms) -> Tuple[FSM, Dict[State, Dict[int, State]]]:
     """
-        Crawl several FSMs in parallel, mapping the states of a larger meta-FSM.
+        Union several FSMs, mapping the states of a larger meta-FSM.
         To determine whether a state in the larger FSM is final.
     """
     alphabet, new_to_old = Alphabet.union(*[fsm.alphabet for fsm in fsms])

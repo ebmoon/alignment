@@ -32,7 +32,7 @@ from .tokenizer import Tokenizer
 
 from ..monitor.monitor import Monitor
 from ..monitor.adaptive_utils import (
-    AdaptiveMaskTrie
+    AdaptiveMask
 )
 
 if TYPE_CHECKING:
@@ -118,7 +118,7 @@ class TransformersModel:
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         monitor: Monitor = None,
         jump_forward: bool = True,
-        adaptive_mask: bool = False,
+        adaptive_mask: AdaptiveMask = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -487,7 +487,7 @@ class TransformersModel:
         input_ids: torch.LongTensor,
         monitor: Monitor,
         jump_forward: bool,
-        adaptive_mask: bool,
+        adaptive_mask: AdaptiveMask,
         logits_processor: LogitsProcessorList,
         stopping_criteria: StoppingCriteriaList,
         generation_config: GenerationConfig,
@@ -543,11 +543,6 @@ class TransformersModel:
         has_eos_stopping_criteria = any(hasattr(criteria, "eos_token_id") for criteria in stopping_criteria)
         do_sample = generation_config.do_sample
 
-        # if the mask is adaptive, initialize adaptive trie
-        if adaptive_mask:
-            adaptive_trie = generation_config.adaptive_trie if generation_config.adaptive_trie else AdaptiveMaskTrie()
-            current_trie_node = adaptive_trie.root
-
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
         raw_logits = () if (return_dict_in_generate and output_logits) else None
@@ -569,6 +564,13 @@ class TransformersModel:
 
         vocab_size = len(self.tokenizer.get_vocab())
 
+        # initialize monitor state
+        monitor.reset()
+
+        if adaptive_mask:
+            adaptive_mask.reset()
+            temp_logits = torch.ones([batch_size, vocab_size], device=input_ids.device)
+
         this_peer_finished = False
         is_first_iteration = True # to preserve the same API in the output as other generation methods
         while self.model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
@@ -577,6 +579,8 @@ class TransformersModel:
             # TODO: Implement filtering for batch
             # 1. Check acceptable next tokens by monitor
             acceptance_batch = monitor.filter_vocab(input_ids)
+            acceptance_batch_seq = [acceptance_batch]
+
             acceptance = torch.full((batch_size, 1, vocab_size), False)
             for i in range(batch_size):
                 acceptance[i, 0, acceptance_batch[i]] = True
@@ -584,6 +588,7 @@ class TransformersModel:
 
             # 2. Jump-forward if only a single next token is acceptable
             jumped_len = 0
+            jumped_states = []
             while jump_forward and input_ids.shape[-1] < max_length - 1 \
                 and all(len(acceptance) == 1 for acceptance in acceptance_batch):
 
@@ -599,7 +604,21 @@ class TransformersModel:
                     input_ids = jumped_input_ids
 
                     monitor.update(ids)
+
+                    # 2.2. If applying adaptive mask, set temporary logits for jumped tokens,
+                    # but memorize those states for future update to correct logits
+                    if adaptive_mask:
+                        adaptive_mask.update_scores(
+                            acceptance_batch,
+                            temp_logits,
+                            self.tokenizer.eos_token_id)
+
+                        jumped_states.append(adaptive_mask.states)
+                        adaptive_mask.feed_tokens(ids)
+
                     acceptance_batch = monitor.filter_vocab(input_ids)
+                    acceptance_batch_seq.append(acceptance_batch)
+
                     acceptance = torch.full((batch_size, 1, vocab_size), False)
                     for i in range(batch_size):
                         acceptance[i, 0, acceptance_batch[i]] = True
@@ -657,7 +676,22 @@ class TransformersModel:
 
             # 3.2. If mask is adaptive, apply adaptive mask for the last token
             if adaptive_mask:
-                mask = current_trie_node.get_mask(batch_size, vocab_size)
+                # 3.2.1. Update logit for the last token
+                adaptive_mask.update_scores(
+                    acceptance_batch,
+                    next_token_logits[:, -1, :],
+                    self.tokenizer.eos_token_id)
+
+                # 3.2.2. Update jumped tokens to the correct logit
+                for i, states in reversed(list(enumerate(jumped_states))):
+                    adaptive_mask.update_scores(
+                        acceptance_batch_seq[i],
+                        next_token_logits[:, i, :],
+                        self.tokenizer.eos_token_id,
+                        states
+                    )
+
+                mask = adaptive_mask.mask(batch_size, vocab_size)
                 mask = mask.to(input_ids.device)
                 new_logits[:, -1, :] += mask
 
@@ -686,6 +720,8 @@ class TransformersModel:
 
             # 4. Update monitor state by selected next tokens
             monitor.update(next_tokens)
+            if adaptive_mask:
+                adaptive_mask.feed_tokens(next_tokens)
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:

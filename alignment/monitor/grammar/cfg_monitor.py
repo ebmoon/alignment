@@ -114,7 +114,6 @@ class CFGMonitor(Monitor):
 
         return acceptances
 
-
     def update(self, next_tokens: torch.LongTensor) -> Iterable[MonitorState]:
         """
         Update the state of the monitor based on the selected next tokens.
@@ -134,4 +133,3 @@ class CFGMonitor(Monitor):
 
     def reset(self):
         self.state = [self.initial_state for _ in range(self.num_batch)]
-

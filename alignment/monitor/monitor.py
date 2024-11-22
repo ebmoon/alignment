@@ -1,10 +1,6 @@
-from typing import TYPE_CHECKING, Iterable
+from typing import Iterable
 
 import torch
-
-
-if TYPE_CHECKING:
-    pass
 
 class MonitorState:
     """Abstract base class for all monitor states"""
@@ -47,3 +43,6 @@ class Monitor:
         """
         Reset the monitor state to the initial state
         """
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `reset`."
+        )

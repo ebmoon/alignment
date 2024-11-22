@@ -1,14 +1,90 @@
-from typing import TYPE_CHECKING, Any, Dict, Optional, Self
+from typing import Any, Dict, Iterable, Optional, Self
 
+import json
 import numpy as np
 import torch
-import json
 
-if TYPE_CHECKING:
-    pass
+from transformers.utils import logging
 
+logger = logging.get_logger(__name__)
 
-class AdaptiveMaskTrieNode:
+class AdaptiveMaskState:
+    """Abstract base class for adaptive mask states"""
+
+class AdaptiveMask:
+    """Abstract base class for adaptive mask monitor"""
+
+    def mask(self, batch_size: int, vocab_size: int) -> torch.FloatTensor:
+        """
+        Construct logit mask from approximated success rates of children.
+
+        Args:
+            batch_size (`int`):
+                The size of batch.
+            vocab_size (`int`):
+                The number of tokens in the vocabulary.
+
+        Return:
+            `torch.FloatTensor` of shape `(batch_size, vocab_size)
+            containing the log of approximated success rate for acceptable next tokens,
+            and minus infinity for invalid next tokens.
+        """
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `mask`."
+        )
+
+    def reset(self):
+        """
+        Reset the adaptive mask state to the initial state
+        """
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `reset`."
+        )
+
+    def update_scores(
+        self,
+        acceptance: Iterable[torch.LongTensor],
+        scores: torch.FloatTensor,
+        eos_token_id: int,
+        states: Optional[Iterable[AdaptiveMaskState]] = None
+    ):
+        """
+        Update children from the list of accepted tokens and their scores.
+
+        Args:
+            acceptance (`torch.LongTensor`s of shape `(num_accepted_tokens)`):
+                Indices of acceptable next tokens in the vocabulary.
+            scores (`torch.FloatTensor` of shape `(batch_size, vocab_size)`):
+                Prediction scores of a language modeling head. These can be logits for each vocabulary when not using
+                beam search or log softmax for each vocabulary token when using beam search
+            eos_token_id (`torch.long`):
+                The index of EOS token in the vocabulary.
+            states (`Iterable[AdaptiveMaskState]`):
+                Optional states to update scores. If not provided, apply update to the current states.
+
+        Returns:
+            `AdaptiveMaskState` after update
+        """
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `update`."
+        )
+
+    def feed_tokens(self, next_tokens: torch.LongTensor) -> Iterable[AdaptiveMaskState]:
+        """
+        Feed selected next tokens to update the current state of adaptive mask
+
+        Args:
+            next_tokens (`torch.LongTensor` of shape `(batch_size)`):
+                Indices of selected next tokens in the vocabulary.
+
+        Return:
+            `AdaptiveMonitorState`s after updating the state.
+        """
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `feed_tokens`."
+        )
+
+class AdaptiveMaskTrieNode(AdaptiveMaskState):
     """
     Trie node containing approximated probability of successive generation.
     """
@@ -41,15 +117,18 @@ class AdaptiveMaskTrieNode:
         child_node.parent = self
 
     def update(
-        self, acceptance: torch.LongTensor, scores: torch.FloatTensor, eos_token_id: int
+        self,
+        acceptance: torch.LongTensor,
+        scores: torch.FloatTensor,
+        eos_token_id: int
     ):
         """
         Update children from the list of accepted tokens and their scores.
 
         Args:
-            acceptance (`torch.LongTensor` of shape `(batch_size, num_accepted_tokens)`):
+            acceptance (`torch.LongTensor` of shape `(num_accepted_tokens)`):
                 Indices of acceptable next tokens in the vocabulary.
-            scores (`torch.FloatTensor` of shape `(batch_size, vocab_size)`):
+            scores (`torch.FloatTensor` of shape `(vocab_size)`):
                 Prediction scores of a language modeling head. These can be logits for each vocabulary when not using
                 beam search or log softmax for each vocabulary token when using beam search
             eos_token_id (`torch.long`):
@@ -57,44 +136,44 @@ class AdaptiveMaskTrieNode:
         """
         likelihoods = torch.nn.functional.softmax(scores, dim=-1)
 
-        for batch_index in range(acceptance.shape(0)):
-            accepted_tokens = acceptance[batch_index].nonzero().squeeze(-1)
+        for token_id in acceptance:
+            token_id = token_id.item()
+            raw_likelihood = likelihoods[token_id].item()
+            if token_id not in self.children:
+                is_end_of_sequence = token_id == eos_token_id
 
-            for token_id in accepted_tokens:
-                if token_id not in self.children:
-                    token_id = token_id.item()
-                    raw_likelihood = likelihoods[batch_index, token_id].item()
-                    is_end_of_sequence = token_id == eos_token_id
+                child_node = AdaptiveMaskTrieNode(
+                    raw_likelihood=raw_likelihood,
+                    token_id=token_id,
+                    is_end_of_sequence=is_end_of_sequence,
+                )
 
-                    child_node = AdaptiveMaskTrieNode(
-                        raw_likelihood=raw_likelihood,
-                        token_id=token_id,
-                        is_end_of_sequence=is_end_of_sequence,
-                    )
+                self._insert(token_id, child_node)
+            else:
+                raw_likelihood = likelihoods[token_id].item()
+                self.children[token_id].raw_likelihood = raw_likelihood
+        
+        self._update_success_rate()
 
-                    self._insert(token_id, child_node)
-
-    def get_mask(self, batch_size: int, vocab_size: int) -> torch.FloatTensor:
+    def mask(self, vocab_size: int) -> torch.FloatTensor:
         """
         Construct logit mask from approximated success rates of children.
 
         Args:
-            batch_size (`int`):
-                The size of batch.
             vocab_size (`int`):
                 The number of tokens in the vocabulary.
 
         Return:
-            `torch.FloatTensor` of shape `(batch_size, vocab_size)
+            `torch.FloatTensor` of shape `(vocab_size)
             containing the log of approximated success rate for acceptable next tokens,
             and minus infinity for invalid next tokens.
         """
 
-        mask = torch.ones([batch_size, vocab_size], dtype=torch.float)
+        mask = torch.ones([vocab_size], dtype=torch.float)
         mask = -float("inf") * mask
 
         for token_id in self.children:
-            mask[:, token_id] = np.log(self.children[token_id].success_rate)
+            mask[token_id] = np.log(self.children[token_id].success_rate)
 
         return mask
 
@@ -110,7 +189,7 @@ class AdaptiveMaskTrieNode:
 
         # Back propagate the success rate
         if self.parent:
-            self.parent.update_success_rate()
+            self.parent._update_success_rate()
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -156,13 +235,109 @@ class AdaptiveMaskTrieNode:
         return node
 
 
-class AdaptiveMaskTrie:
+class AdaptiveMaskTrie(AdaptiveMask):
     """
     Trie for adaptive masking in checker-guided generation.
     """
 
-    def __init__(self):
+    def __init__(self, batch_size: int = 1):
         self.root = AdaptiveMaskTrieNode(raw_likelihood=1)
+        self.batch_size = batch_size
+        self.states = [self.root for _ in range(batch_size)]
+
+    def set_batch_size(self, batch_size: int):
+        """
+        Change batch size and reinitialize states
+        
+        Args:
+            batch_size (`int`):
+                The size of batch.
+        """
+        
+        self.batch_size = batch_size
+        self.reset()
+
+    def mask(self, batch_size: int, vocab_size: int) -> torch.FloatTensor:
+        """
+        Construct logit mask from approximated success rates of children.
+
+        Args:
+            batch_size (`int`):
+                The size of batch.
+            vocab_size (`int`):
+                The number of tokens in the vocabulary.
+
+        Return:
+            `torch.FloatTensor` of shape `(batch_size, vocab_size)
+            containing the log of approximated success rate for acceptable next tokens,
+            and minus infinity for invalid next tokens.
+        """
+        if batch_size != self.batch_size:
+            logger.warning(
+                "The requested batch size %d is different to %d, resizing to %d.",
+                batch_size, self.batch_size, batch_size
+            )
+            self.set_batch_size(batch_size)
+
+        mask = torch.zeros([batch_size, vocab_size], dtype=torch.float)
+
+        for i, state in enumerate(self.states):
+            mask[i, :] = state.mask(vocab_size)
+
+        return mask
+
+    def update_scores(
+        self,
+        acceptance: Iterable[torch.LongTensor],
+        scores: torch.FloatTensor,
+        eos_token_id: int,
+        states: Optional[Iterable[AdaptiveMaskTrieNode]] = None
+    ) -> AdaptiveMaskState:
+        """
+        Update children from the list of accepted tokens and their scores.
+
+        Args:
+            acceptance (`torch.LongTensor`s of shape `(num_accepted_tokens)`):
+                Indices of acceptable next tokens in the vocabulary.
+            scores (`torch.FloatTensor` of shape `(batch_size, vocab_size)`):
+                Prediction scores of a language modeling head. These can be logits for each vocabulary when not using
+                beam search or log softmax for each vocabulary token when using beam search
+            eos_token_id (`torch.long`):
+                The index of EOS token in the vocabulary.
+
+        Returns:
+            `AdaptiveMaskState` after update
+        """
+
+        if states is None:
+            states = self.states
+
+        for i, state in enumerate(states):
+            state.update(acceptance[i], scores[i, :], eos_token_id)
+
+    def feed_tokens(self, next_tokens: torch.LongTensor) -> Iterable[AdaptiveMaskState]:
+        """
+        Feed selected next tokens to update the current state of adaptive mask
+
+        Args:
+            next_tokens (`torch.LongTensor` of shape `(batch_size)`):
+                Indices of selected next tokens in the vocabulary.
+
+        Return:
+            `AdaptiveMonitorState`s after updating the state.
+        """
+
+        self.states = [state.children[next_tokens[i].item()] \
+                       for i, state in enumerate(self.states)]
+
+        return self.states
+
+    def reset(self):
+        """
+        Reset the monitor state to the initial state
+        """
+
+        self.states = [self.root for _ in range(self.batch_size)]
 
     def json(self) -> str:
         """
@@ -175,7 +350,7 @@ class AdaptiveMaskTrie:
         return json.dumps(self.root.to_dict(), indent=2)
 
     @staticmethod
-    def loads(js: str) -> Self:
+    def loads(js: str, num_batch: int = 1) -> Self:
         """
         Load adaptive mask trie from a JSON string.
 
@@ -185,7 +360,8 @@ class AdaptiveMaskTrie:
         Return:
             `AdaptiveMaskTrie` constructed from the JSON string.
         """
-        trie = AdaptiveMaskTrie()
+        trie = AdaptiveMaskTrie(num_batch)
         trie.root = AdaptiveMaskTrieNode.from_dict(json.loads(js))
+        trie.states = [trie.root for _ in range(num_batch)]
 
         return trie
