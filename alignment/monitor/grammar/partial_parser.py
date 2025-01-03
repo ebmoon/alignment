@@ -155,7 +155,7 @@ class TokenParsingTable:
             transitions = lexing_fst.map[lexer_state]
             for parser_state in parse_table.states:
                 token_transitions = _build_transitions(
-                    parser_state, parse_table, transitions, 
+                    parser_state, parse_table, transitions,
                     eos_token_id, end_state, invalid_pairs)
                 if len(token_transitions) > 0:
                     token_table[lexer_state, parser_state] = token_transitions
@@ -190,7 +190,7 @@ def _build_transitions(
 
 def _follow(
         parser_state: StateP,
-        parse_table: ParseTableBase, 
+        parse_table: ParseTableBase,
         terminals: Iterable[str]
     ) -> Optional[Tuple[Iterable[StateP], Iterable[str]]]:
     

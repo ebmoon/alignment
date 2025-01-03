@@ -7,8 +7,8 @@ from alignment.monitor.adaptive_utils import AdaptiveMaskTrie
 from alignment.models import TransformersModel
 
 NUM_ITER = 50
-# MODEL_ID = "TinyLlama/TinyLlama_v1.1"
-MODEL_ID = "Salesforce/codegen-350M-multi"
+MODEL_ID = "TinyLlama/TinyLlama_v1.1"
+# MODEL_ID = "Salesforce/codegen-350M-multi"
 GRAMMAR_PATH = "examples/test/binary_len_5_0.ebnf"
 TRIE_PATH = "tries/binary_len_5_0_trie.json"
 DEVICE = "cpu"
