@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alignment"
+dynamic = ["version"]
+description = "A package to support general constraint-aligned decoding."
+readme = "README.md"
+authors = [
+    { name = "Kanghee Park", email = "kap022@ucsd.edu" }
+]
+license = { text = "MIT" }
+keywords = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+dependencies = []
+requires-python = ">=3.9"
+
+[tool.setuptools.packages.find]
+where = ["alignment"]
