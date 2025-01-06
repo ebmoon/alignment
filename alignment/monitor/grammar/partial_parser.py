@@ -54,13 +54,13 @@ class TokenParsingTable:
         parser_state = stack[-1]
         if (lexer_state, parser_state) not in self.token_table:
             return {}
-    
+
         accepted = {}
         transitions = self.token_table[lexer_state, parser_state]
         for k, (lexer_dest, stack_push, terminals) in transitions.items():
             if len(terminals) > 0:
                 # Check if terminals can be consumed by the current stack
-                stack_updated = self._feed_terminals(stack + stack_push, terminals)
+                stack_updated = self._feed_terminals(stack[:-1] + stack_push, terminals)
                 if stack_updated:
                     parser_dest = stack_updated[-1]
                     if k == self.eos_token_id and parser_dest == self.end_state:
@@ -69,7 +69,7 @@ class TokenParsingTable:
                         accepted[k] = (lexer_dest, stack_updated)
             else:
                 # if there is no remaining terminals, the last action must be shift
-                accepted[k] = (lexer_dest, stack + stack_push)
+                accepted[k] = (lexer_dest, stack[:-1] + stack_push)
 
         return accepted
 
@@ -129,6 +129,7 @@ class TokenParsingTable:
         Args:
             lexing_fst(`PartialLexerFST`): a token-to-terminal lexing transducer
             parse_table(`ParseTableBase`): a terminal-level parse table
+            eos_token_id(`int`): the index of eos token in vocabulary
 
         Returns:
             `TokenParsingTable`: a token-level parse table
@@ -145,7 +146,7 @@ class TokenParsingTable:
                 valid_terminals = list(parse_table.states[parser_state].keys())
                 reachable_terminals = lexing_fst.reachable_terminals[lexer_state]
 
-                if len(set(valid_terminals) & set(reachable_terminals)) == 0:
+                if len(set(valid_terminals) & reachable_terminals) == 0:
                     invalid_pairs[lexer_state].add(parser_state)
 
         for lexer_state in lexing_fst.states:
@@ -175,7 +176,7 @@ def _build_transitions(
     for k, (lexer_dest, terminals) in transitions.items():
         if len(terminals) == 0:
             if parser_state not in invalid_pairs[lexer_dest]:
-                token_transitions[k] = (lexer_dest, [], terminals)
+                token_transitions[k] = (lexer_dest, [parser_state], terminals)
         else:
             transition_result = _follow(parser_state, parse_table, terminals)
             if transition_result:
@@ -194,7 +195,7 @@ def _follow(
         terminals: Iterable[str]
     ) -> Optional[Tuple[Iterable[StateP], Iterable[str]]]:
     
-    stack = []
+    stack = [parser_state]
 
     for i, terminal in enumerate(terminals):
         if parser_state not in parse_table.states:

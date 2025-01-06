@@ -19,7 +19,7 @@ class PartialLexerFST(BasicLexer):
     A finite-state transducer implementation of partial lexer.
     """
 
-    vocabulary: Dict[str, int]
+    vocabulary: Dict[int, str]
     fsm: FSM
     initial: State
     states: Set[State]
@@ -28,7 +28,7 @@ class PartialLexerFST(BasicLexer):
     final_map: Dict[State, str]
     reachable_terminals: Dict[State, str]
 
-    def __init__(self, conf: "LexerConf", vocabulary: Dict[str, int], eos_token_id: int):
+    def __init__(self, conf: "LexerConf", vocabulary: Dict[int, str], eos_token_id: int):
         super().__init__(conf)
 
         self.vocabulary = vocabulary
@@ -148,7 +148,7 @@ class PartialLexerFST(BasicLexer):
         fst_map = {state:{} for state in self.states}
 
         for state in self.states:
-            for token, token_id in self.vocabulary.items():
+            for token_id, token in self.vocabulary.items():
                 if token_id == self.eos_token_id and state in self.finals:
                     fst_map[state][token_id] = (self.initial, [self.final_map[state], END_TERMINAL])
                 else:
@@ -162,12 +162,12 @@ class PartialLexerFST(BasicLexer):
         # TODO: Avoid repetitive computation
         seen = {state}
         reachable = [state]
-        terminals = []
+        terminals = set()
         i = 0
         while i < len(reachable):
             current = reachable[i]
             if current in self.finals:
-                terminals.append(self.final_map[current])
+                terminals.add(self.final_map[current])
             if current in self.fsm.map:
                 for transition in self.fsm.map[current]:
                     next_state = self.fsm.map[current][transition]

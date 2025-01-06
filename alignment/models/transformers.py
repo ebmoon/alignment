@@ -575,8 +575,7 @@ class TransformersModel:
         is_first_iteration = True # to preserve the same API in the output as other generation methods
         while self.model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
-
-            # TODO: Implement filtering for batch
+            
             # 1. Check acceptable next tokens by monitor
             acceptance_batch = monitor.filter_vocab(input_ids)
             acceptance_batch_seq = [acceptance_batch]
@@ -592,7 +591,10 @@ class TransformersModel:
             while jump_forward and input_ids.shape[-1] < max_length - 1 \
                 and all(len(acceptance) == 1 for acceptance in acceptance_batch):
 
-                ids = torch.LongTensor([acceptance[0] for acceptance in acceptance_batch])
+                ids = torch.tensor(
+                    [acceptance[0] for acceptance in acceptance_batch],
+                    dtype=torch.long,
+                    device=input_ids.device)
                 acceptance_tensor_col = ids.reshape(-1, 1)
 
                 jumped_input_ids = torch.cat([input_ids, acceptance_tensor_col], dim=-1)
@@ -651,6 +653,9 @@ class TransformersModel:
             # prepare variable output controls (note: some models won't accept all output controls)
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
+            
+            model_inputs.update({"position_ids": model_inputs["position_ids"].to(input_ids.device)})
+            model_inputs.update({"attention_mask": model_inputs["attention_mask"].to(input_ids.device)})
 
             # forward pass to get next token
             outputs = self.model(**model_inputs)

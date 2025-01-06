@@ -56,7 +56,7 @@ class CFGMonitor(Monitor):
     def __init__(
             self,
             grammar_str: str,
-            vocabulary: Dict[str, int],
+            vocabulary: Dict[int, str],
             eos_token_id: int,
             num_batch: int = 1
         ):
@@ -80,7 +80,20 @@ class CFGMonitor(Monitor):
         vocabulary = tokenizer.get_vocab()
         eos_token_id = tokenizer.eos_token_id
 
-        return CFGMonitor(grammar_str, vocabulary, eos_token_id, num_batch)
+        tokens_previous = tokenizer.encode("a")
+        previous_output_length = len(tokenizer.decode(tokens_previous))
+
+        id_to_token = {}
+        for token, token_id in vocabulary.items():
+            # Trick to handle some tokenizers that eliminates whitespace in prefix
+            full_tokens = tokens_previous + [token_id]
+            decoded_token = tokenizer.decode(full_tokens)[previous_output_length:]
+            id_to_token[token_id] = decoded_token
+
+            if decoded_token == ' ':
+                print(decoded_token, token, token_id)
+
+        return CFGMonitor(grammar_str, id_to_token, eos_token_id, num_batch)
 
     def _initialize_state(self):
         lark_parser = Lark(self.grammar_str, parser='lalr')
@@ -110,7 +123,9 @@ class CFGMonitor(Monitor):
         """
 
         assert input_ids.shape[0] == self.num_batch
-        acceptances = [torch.LongTensor(list(s.acceptance.keys())) for s in self.state]
+        acceptances = [
+            torch.tensor(list(s.acceptance.keys()), dtype=torch.long, device=input_ids.device) 
+            for s in self.state]
 
         return acceptances
 
@@ -128,6 +143,10 @@ class CFGMonitor(Monitor):
 
         assert next_tokens.shape[0] == self.num_batch
         self.state = [s.feed_token(next_tokens[i].item()) for i, s in enumerate(self.state)]
+
+        acceptances = [
+            torch.tensor(list(s.acceptance.keys()), dtype=torch.long) 
+            for s in self.state]
 
         return self.state
 
