@@ -83,35 +83,39 @@ class TokenParsingTable:
         parse_table = self.terminal_table
 
         for terminal in terminals:
-            if parser_state not in parse_table.states:
-                return None
-
-            table_for_state = parse_table.states[parser_state]
-            if terminal not in table_for_state:
-                return None
-
-            action, arg = table_for_state[terminal]
-            if action is Shift:
-                assert isinstance(arg, StateP)
-                parser_state = arg
-                stack.append(parser_state)
-            else:   # Reduce
-                rule = arg
-                size = len(rule.expansion)
-
-                if size < len(stack):
-                    if size:
-                        stack = stack[:-size]
-
-                    state = stack[-1]
-                    nt_name = rule.origin.name
-                    _action, parser_state = parse_table.states[state][nt_name]
-
-                    assert _action is Shift
-                    stack.append(parser_state)
-
-                else:
+            while True:
+                if parser_state not in parse_table.states:
                     return None
+
+                table_for_state = parse_table.states[parser_state]
+                if terminal not in table_for_state:
+                    return None
+
+                action, arg = table_for_state[terminal]
+                if action is Shift:
+                    parser_state = arg
+                    stack.append(parser_state)
+                    break
+                else:   # Reduce
+                    rule = arg
+                    size = len(rule.expansion)
+
+                    if size < len(stack):
+                        if size:
+                            stack = stack[:-size]
+
+                        state = stack[-1]
+                        nt_name = rule.origin.name
+                        _action, parser_state = parse_table.states[state][nt_name]
+
+                        assert _action is Shift
+                        stack.append(parser_state)
+
+                        if parser_state == self.end_state:
+                            return stack
+
+                    else:
+                        return None
 
         return stack
 
@@ -178,7 +182,7 @@ def _build_transitions(
             if parser_state not in invalid_pairs[lexer_dest]:
                 token_transitions[k] = (lexer_dest, [parser_state], terminals)
         else:
-            transition_result = _follow(parser_state, parse_table, terminals)
+            transition_result = _follow(parser_state, parse_table, terminals, end_state)
             if transition_result:
                 stack, terminals = transition_result
                 parser_dest = stack[-1]
@@ -192,39 +196,45 @@ def _build_transitions(
 def _follow(
         parser_state: StateP,
         parse_table: ParseTableBase,
-        terminals: Iterable[str]
+        terminals: Iterable[str],
+        end_state: StateP
     ) -> Optional[Tuple[Iterable[StateP], Iterable[str]]]:
     
     stack = [parser_state]
 
     for i, terminal in enumerate(terminals):
-        if parser_state not in parse_table.states:
-            return None
+        while True:
+            if parser_state not in parse_table.states:
+                return None
 
-        table_for_state = parse_table.states[parser_state]
-        if terminal not in table_for_state:
-            return None
-        
-        action, arg = table_for_state[terminal]
-        if action is Shift:
-            parser_state = arg
-            stack.append(parser_state)
-        else:   # Reduce
-            rule = arg
-            size = len(rule.expansion)
-
-            if size < len(stack):
-                if size:
-                    stack = stack[:-size]
-
-                state = stack[-1]
-                nt_name = rule.origin.name
-                _action, parser_state = parse_table.states[state][nt_name]
+            table_for_state = parse_table.states[parser_state]
+            if terminal not in table_for_state:
+                return None
             
-                assert _action is Shift
+            action, arg = table_for_state[terminal]
+            if action is Shift:
+                parser_state = arg
                 stack.append(parser_state)
+                break
+            else:   # Reduce
+                rule = arg
+                size = len(rule.expansion)
 
-            else:   # can't be precomputed from here
-                return stack, terminals[i:]
-    
+                if size < len(stack):
+                    if size:
+                        stack = stack[:-size]
+
+                    state = stack[-1]
+                    nt_name = rule.origin.name
+                    _action, parser_state = parse_table.states[state][nt_name]
+                
+                    assert _action is Shift
+                    stack.append(parser_state)
+
+                    if parser_state == end_state:
+                        return stack, []
+
+                else:   # can't be precomputed from here
+                    return stack, terminals[i:]
+
     return stack, []

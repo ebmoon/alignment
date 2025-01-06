@@ -55,14 +55,14 @@ class CFTMonitorTest(TestCase):
 
             ?string_value: "\\"" STRING "\\""
 
-            ?ans_value: "\\"(" ANSWER ")\\""
+            ?ans_value: "\\"" ANSWER "\\""
 
-            ANSWER: "A".."E"
+            ANSWER: /\\([A-E]\\)/
             STRING.1: /[ \\t!#-\\[\\]-~]+/"""
         
         vocabulary = {
             0:'A', 1:'B', 2:'C', 3:'bb', 4:'"', 5:'reasoning', 6:'answer', 
-            7:' ', 8:'EOS', 9:'{', 10:'}', 11:':', 12:'  ', 13:'\t', 14:','}
+            7:' ', 8:'EOS', 9:'{', 10:'}', 11:':', 12:'  ', 13:'\t', 14:',', 15:'(', 16:')'}
         monitor = CFGMonitor(grammar_str, vocabulary, eos_token_id=8)
 
         state = monitor.state[0]
@@ -113,3 +113,64 @@ class CFTMonitorTest(TestCase):
         self.assertTrue(len(state.acceptance) == 1)
 
         state = state.feed_token(7)
+
+        self.assertTrue(4 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(4)
+
+        self.assertTrue(6 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(6)
+
+        self.assertTrue(4 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(4)
+
+        self.assertTrue(11 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(11)
+
+        self.assertTrue(7 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(7)
+
+        self.assertTrue(4 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(4)
+
+        self.assertTrue(15 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(15)
+
+        self.assertTrue(0 in state.acceptance)
+        self.assertTrue(1 in state.acceptance)
+        self.assertTrue(2 in state.acceptance)
+
+        state = state.feed_token(2)
+
+        self.assertTrue(16 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(16)
+
+        self.assertTrue(4 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(4)
+
+        self.assertTrue(10 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(10)
+
+        self.assertTrue(8 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)
+
+        state = state.feed_token(8)

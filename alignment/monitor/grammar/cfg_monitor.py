@@ -90,9 +90,6 @@ class CFGMonitor(Monitor):
             decoded_token = tokenizer.decode(full_tokens)[previous_output_length:]
             id_to_token[token_id] = decoded_token
 
-            if decoded_token == ' ':
-                print(decoded_token, token, token_id)
-
         return CFGMonitor(grammar_str, id_to_token, eos_token_id, num_batch)
 
     def _initialize_state(self):
