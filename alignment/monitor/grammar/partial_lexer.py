@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Dict, Set, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Set, List, Iterable, Optional, Tuple
 
 from lark.lexer import (
     BasicLexer,
@@ -13,6 +13,32 @@ if TYPE_CHECKING:
     from lark.lexer import LexerConf
 
 END_TERMINAL = '$END'
+
+class TokenTrieNode:
+    def __init__(self):
+        self.children = {}
+        self.cache = {}
+
+class TokenTrie:
+    """
+    A trie of LLM vocabulary tokens
+    """
+    def __init__(self):
+        self.root = TokenTrieNode()
+    
+    def insert(self, string):
+        node = self.root
+        for char in string:
+            if char not in node.children:
+                node.children[char] = TokenTrieNode()
+            node = node.children[char]
+
+    def traverse(self, string):
+        node = self.root
+        for char in string:
+            node = node.children[char]
+        
+        return node
 
 class PartialLexerFST(BasicLexer):
     """
@@ -93,69 +119,69 @@ class PartialLexerFST(BasicLexer):
         self.initial = fsm.initial
         self.states = fsm.states
         self.finals = fsm.finals
-    
-    def _longest_match(
-            self, state: State, lexeme: str
-        ) -> Tuple[Optional[State], Optional[str], str]:
+
+    def _compute_transition_dfs(
+        self, node: TokenTrieNode, char: str, prev_result: Dict[State, Tuple[State, List[str]]]
+    ) -> Dict[State, Tuple[State, List[str]]]:
         """
-        Find the longest match of the input from the state.
+        Update the map (src_state) -> (dest_state, output_terminals) for the current node.
+
+        The map is based on the longest match of the input from the state.
         There are three possible cases:
             1. the input can be partially matched to a Terminal
             2. the transition stuck at a final state (i.e., matched to a terminal)
             3. the transition stuck at a non-final state (i.e., a prefix is matched to a terminal)
         We assume 1-lookahead lexer so the case 3 is discarded.
-
-        Returns:
-            Optional[State]: starting state after the longest match
-            Optional[Token]: matched terminal token
-            str: remainder after the longest match
         """
+        result = {}
 
-        alphabet = self.fsm.alphabet
-
-        for i, symbol in enumerate(lexeme):
-            if anything_else in alphabet and symbol not in alphabet:
+        for src, (dest, out) in prev_result.items():
+            symbol = char
+            if anything_else in self.fsm.alphabet and symbol not in self.fsm.alphabet:
                 symbol = anything_else
-            transition = alphabet[symbol]
+            transition = self.fsm.alphabet[symbol]
 
-            if not (state in self.fsm.map and transition in self.fsm.map[state]):
-                if state in self.finals:
+            if not (dest in self.fsm.map and transition in self.fsm.map[dest]):
+                if dest in self.finals and transition in self.fsm.map[self.initial]:
                     # Case 2: the transition stuck at a final stat
-                    return self.initial, self.final_map[state], lexeme[i:]
+                    result[src] = (
+                        self.fsm.map[self.initial][transition], 
+                        out + [self.final_map[dest]])
                 else:
                     # Case 3: the transition stuck at a non-final state
-                    return None, None, ''
-
-            state = self.fsm.map[state][transition]
+                    continue
         
-        # Case 1: the input can be partially matched to a Terminal
-        return state, None, ''
+        node.cache = result
 
-    def _compute_transition(
-            self, state: State, token: str
-        ) -> Optional[Tuple[State, Iterable[str]]]:
-        terminals = []
-        while len(token) > 0:
-            state, terminal, token = self._longest_match(state, token)
-            if state is None:
-                return None
+        for char, child in node.children.items():
+            self._compute_transition_dfs(child, char, result)
 
-            if terminal:
-                terminals.append(terminal)
-        return state, terminals
+        return result
 
     def _build_map(self):
+        # Build prefix trie of vocabulary tokens
+        trie = TokenTrie()
+        for token_id, token in self.vocabulary.items():
+            if token_id != self.eos_token_id:
+                trie.insert(token)
+
+        # Update transition map
+        id_map = {state:(state, []) for state in self.states}
+        for char, child in trie.root.children.items():
+            self._compute_transition_dfs(child, char, id_map)
+
+        # Build FST map
         fst_map = {state:{} for state in self.states}
+        for token_id, token in self.vocabulary.items():
+            if token_id == self.eos_token_id:
+                for state in self.finals:
+                    fst_map[state][token_id] = (self.initial, (self.final_map[state], END_TERMINAL))
+            else:
+                cached_result = trie.traverse(token).cache
+                for src, (dest, out) in cached_result.items():
+                    fst_map[src][token] = (dest, out)
 
-        for state in self.states:
-            for token_id, token in self.vocabulary.items():
-                if token_id == self.eos_token_id and state in self.finals:
-                    fst_map[state][token_id] = (self.initial, [self.final_map[state], END_TERMINAL])
-                else:
-                    transition = self._compute_transition(state, token)
-                    if transition:
-                        fst_map[state][token_id] = transition
-
+        del trie
         self.map = fst_map
 
     def _compute_reachable_terminals_single(self, state: State) -> Iterable[str]:
