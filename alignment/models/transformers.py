@@ -575,7 +575,7 @@ class TransformersModel:
         is_first_iteration = True # to preserve the same API in the output as other generation methods
         while self.model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
-            
+
             # 1. Check acceptable next tokens by monitor
             acceptance_batch = monitor.filter_vocab(input_ids)
             acceptance_batch_seq = [acceptance_batch]

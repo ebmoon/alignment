@@ -174,3 +174,51 @@ class CFTMonitorTest(TestCase):
         self.assertTrue(len(state.acceptance) == 1)
 
         state = state.feed_token(8)
+
+    def test_dragon_book_grammar(self):
+        grammar_str = """
+            // Example 4.54 (Fig 4.41) from the Dragon Book
+            ?start: ch ch
+            ?ch: "c" ch | "d"
+        """
+
+        vocabulary = {0:'c', 1:'d', 2:'cc', 3:'cd', 4:'dc', 5:'dd', 6:'EOS'}
+        monitor = CFGMonitor(grammar_str, vocabulary, eos_token_id=6)
+
+        state = monitor.state[0]
+        print(state.lexer_state, state.stack)
+        print("")
+
+        self.assertTrue(6 not in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 6)
+
+        state = state.feed_token(4)
+        print(state.lexer_state, state.stack)
+        print("")
+
+        self.assertTrue(0 in state.acceptance)
+        self.assertTrue(1 in state.acceptance)
+        self.assertTrue(2 in state.acceptance)
+        self.assertTrue(3 in state.acceptance)
+        self.assertTrue(4 not in state.acceptance)
+        self.assertTrue(5 not in state.acceptance)
+        self.assertTrue(6 not in state.acceptance)
+
+        state = state.feed_token(3)
+
+        print(state.lexer_state, state.stack)
+        print("")
+
+        print(state.parse_table.terminal_table.states)
+        print("")
+
+        print(state.lexer.map)
+        print("")
+
+        print(state.parse_table.token_table)
+        print("")
+
+        print(state.acceptance)
+
+        self.assertTrue(6 in state.acceptance)
+        self.assertTrue(len(state.acceptance) == 1)

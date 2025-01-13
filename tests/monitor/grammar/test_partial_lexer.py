@@ -33,20 +33,20 @@ class PartialLexerFSTTest(TestCase):
         """
 
         lexer_conf = Lark(calc_grammar, parser='lalr').lexer_conf
-        vocabulary = {'---':1, '-':3, 'aa':4, 'a':5, 'abb-':6, ' ':7, 'a ':8, '---a':9, 'EOS':10}
+        vocabulary = {1:'---', 3:'-', 4:'aa', 5:'a', 6:'abb-', 7:' ', 8:'a ', 9:'---a', 10:'EOS'}
 
         fst = PartialLexerFST(lexer_conf, vocabulary, eos_token_id=10)
 
-        state_1, out = fst.follow(fst.initial, vocabulary['-'])
+        state_1, out = fst.follow(fst.initial, 3)
         self.assertEqual(len(out), 0)
 
-        _, out = fst.follow(state_1, vocabulary['---'])
+        _, out = fst.follow(state_1, 1)
         self.assertEqual(len(out), 1)
 
-        state_1, out = fst.follow(fst.initial, vocabulary['abb-'])
+        state_1, out = fst.follow(fst.initial, 6)
         self.assertEqual(len(out), 1)
 
-        _, out = fst.follow(state_1, vocabulary['---'])
+        _, out = fst.follow(state_1, 1)
         self.assertEqual(len(out), 1)
 
     def test_if_grammar(self):
@@ -80,23 +80,23 @@ class PartialLexerFSTTest(TestCase):
         """
 
         lexer_conf = Lark(grammar, parser='lalr').lexer_conf
-        vocabulary = {'if ':1, 'iff':2, 'if':3, ' ':4, 'EOS':5}
+        vocabulary = {1:'if ', 2:'iff', 3:'if', 4:' ', 5:'EOS'}
 
         fst = PartialLexerFST(lexer_conf, vocabulary, eos_token_id=5)
 
-        state_1, out = fst.follow(fst.initial, vocabulary['iff'])
+        state_1, out = fst.follow(fst.initial, 2)
         self.assertEqual(len(out), 0)
 
-        _, out = fst.follow(state_1, vocabulary[' '])
+        _, out = fst.follow(state_1, 4)
         self.assertEqual(len(out), 1)
 
-        state_1, out = fst.follow(fst.initial, vocabulary['if'])
+        state_1, out = fst.follow(fst.initial, 3)
         self.assertEqual(len(out), 0)
 
-        _, out = fst.follow(state_1, vocabulary['iff'])
+        _, out = fst.follow(state_1, 2)
         self.assertEqual(len(out), 0)
 
-        _, out = fst.follow(state_1, vocabulary[' '])
+        _, out = fst.follow(state_1, 4)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0], 'IF')
 

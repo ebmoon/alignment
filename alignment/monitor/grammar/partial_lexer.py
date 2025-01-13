@@ -70,7 +70,7 @@ class PartialLexerFST(BasicLexer):
         self.map = None
         self._build_map()
 
-        self.reachables = None
+        self.reachable_terminals = None
         self._compute_reachable_terminals()
 
     def producible(self, terminals: Iterable[str]) -> Iterable[State]:
@@ -146,11 +146,12 @@ class PartialLexerFST(BasicLexer):
                     # Case 2: the transition stuck at a final stat
                     result[src] = (
                         self.fsm.map[self.initial][transition], 
-                        out + [self.final_map[dest]])
-                else:
-                    # Case 3: the transition stuck at a non-final state
-                    continue
-        
+                        out + (self.final_map[dest],))
+
+            # Case 1: the input can be partially matched to a terminal
+            else:
+                result[src] = (self.fsm.map[dest][transition], out)
+
         node.cache = result
 
         for char, child in node.children.items():
@@ -166,7 +167,7 @@ class PartialLexerFST(BasicLexer):
                 trie.insert(token)
 
         # Update transition map
-        id_map = {state:(state, []) for state in self.states}
+        id_map = {state:(state, tuple()) for state in self.states}
         for char, child in trie.root.children.items():
             self._compute_transition_dfs(child, char, id_map)
 
@@ -179,9 +180,19 @@ class PartialLexerFST(BasicLexer):
             else:
                 cached_result = trie.traverse(token).cache
                 for src, (dest, out) in cached_result.items():
-                    fst_map[src][token] = (dest, out)
+                    fst_map[src][token_id] = (dest, out)
 
         del trie
+
+        # Remove trap states from map
+        dummy_states = []
+        for state, d in fst_map.items():
+            if len(d) == 0:
+                dummy_states.append(state)
+        
+        for state in dummy_states:
+            del fst_map[state]
+
         self.map = fst_map
 
     def _compute_reachable_terminals_single(self, state: State) -> Iterable[str]:
