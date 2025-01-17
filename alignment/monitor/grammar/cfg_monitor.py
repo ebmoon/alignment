@@ -46,7 +46,8 @@ class CFGMonitorState(MonitorState):
         """
         if token_id not in self._state_cache:
             acceptance = self.acceptance
-            lexer_state, stack = acceptance[token_id]
+            stack = acceptance[token_id]
+            lexer_state = self.lexer.follow(self.lexer_state, token_id)[0]
             monitor_state = CFGMonitorState(lexer_state, stack, self.lexer, self.parse_table)
             self._state_cache[token_id] = monitor_state
 
@@ -163,10 +164,6 @@ class CFGMonitor(Monitor):
 
         assert next_tokens.shape[0] == self.num_batch
         self.state = [s.feed_token(next_tokens[i].item()) for i, s in enumerate(self.state)]
-
-        acceptances = [
-            torch.tensor(list(s.acceptance.keys()), dtype=torch.long) 
-            for s in self.state]
 
         return self.state
 

@@ -6,8 +6,12 @@ from lark.lexer import (
     Pattern
 )
 
+from collections import defaultdict
 from interegular import FSM, parse_pattern
 from interegular.fsm import Alphabet, OblivionError, State, TransitionKey, anything_else
+
+from multiprocessing import Pool
+from functools import partial
 
 if TYPE_CHECKING:
     from lark.lexer import LexerConf
@@ -15,28 +19,47 @@ if TYPE_CHECKING:
 END_TERMINAL = '$END'
 
 class TokenTrieNode:
-    def __init__(self):
+    def __init__(self, node_id):
+        self.id = node_id
         self.children = {}
         self.cache = {}
+        self.tokens = []
 
 class TokenTrie:
     """
     A trie of LLM vocabulary tokens
     """
-    def __init__(self):
-        self.root = TokenTrieNode()
+    def __init__(self, alphabet):
+        self.root = TokenTrieNode(0)
+        self.alphabet = alphabet
+        self.count = 1
     
-    def insert(self, string):
+    def insert(self, token_id, string):
         node = self.root
         for char in string:
-            if char not in node.children:
-                node.children[char] = TokenTrieNode()
-            node = node.children[char]
+            symbol = char
+            if anything_else in self.alphabet and symbol not in self.alphabet:
+                symbol = anything_else
+            transition = self.alphabet[symbol]
+
+            if transition not in node.children:
+                node.children[transition] = TokenTrieNode(self.count)
+                self.count += 1
+            node = node.children[transition]
+
+        node.tokens.append(token_id)
+
+        return node
 
     def traverse(self, string):
         node = self.root
         for char in string:
-            node = node.children[char]
+            symbol = char
+            if anything_else in self.alphabet and symbol not in self.alphabet:
+                symbol = anything_else
+            transition = self.alphabet[symbol]
+
+            node = node.children[transition]
         
         return node
 
@@ -68,6 +91,8 @@ class PartialLexerFST(BasicLexer):
         self._build_fsm()
 
         self.map = None
+        self.leaf_nodes = None
+        self.trie = None
         self._build_map()
 
         self.reachable_terminals = None
@@ -121,7 +146,10 @@ class PartialLexerFST(BasicLexer):
         self.finals = fsm.finals
 
     def _compute_transition_dfs(
-        self, node: TokenTrieNode, char: str, prev_result: Dict[State, Tuple[State, List[str]]]
+        self, 
+        node: TokenTrieNode, 
+        transition: TransitionKey, 
+        prev_result: Dict[State, Tuple[State, List[str]]]
     ) -> Dict[State, Tuple[State, List[str]]]:
         """
         Update the map (src_state) -> (dest_state, output_terminals) for the current node.
@@ -136,14 +164,9 @@ class PartialLexerFST(BasicLexer):
         result = {}
 
         for src, (dest, out) in prev_result.items():
-            symbol = char
-            if anything_else in self.fsm.alphabet and symbol not in self.fsm.alphabet:
-                symbol = anything_else
-            transition = self.fsm.alphabet[symbol]
-
             if not (dest in self.fsm.map and transition in self.fsm.map[dest]):
                 if dest in self.finals and transition in self.fsm.map[self.initial]:
-                    # Case 2: the transition stuck at a final stat
+                    # Case 2: the transition stuck at a final state
                     result[src] = (
                         self.fsm.map[self.initial][transition], 
                         out + (self.final_map[dest],))
@@ -154,45 +177,64 @@ class PartialLexerFST(BasicLexer):
 
         node.cache = result
 
-        for char, child in node.children.items():
-            self._compute_transition_dfs(child, char, result)
+        for transition, child in node.children.items():
+            self._compute_transition_dfs(child, transition, result)
 
         return result
 
     def _build_map(self):
         # Build prefix trie of vocabulary tokens
-        trie = TokenTrie()
+        trie = TokenTrie(self.fsm.alphabet)
+        leaf_nodes = {}
+
+        import time
+        start_t = time.time()
+
         for token_id, token in self.vocabulary.items():
             if token_id != self.eos_token_id:
-                trie.insert(token)
+                node = trie.insert(token_id, token)
+
+                leaf_nodes[node.id] = node
+
+        end_t = time.time()
+        print(f"Token trie construction: {end_t - start_t} s")
+
+        start_t = time.time()
 
         # Update transition map
         id_map = {state:(state, tuple()) for state in self.states}
-        for char, child in trie.root.children.items():
-            self._compute_transition_dfs(child, char, id_map)
+        for transition, child in trie.root.children.items():
+            self._compute_transition_dfs(child, transition, id_map)
+
+        end_t = time.time()
+        print(f"Precomputation for token trie: {end_t - start_t} s")
+
+        start_t = time.time()
 
         # Build FST map
         fst_map = {state:{} for state in self.states}
-        for token_id, token in self.vocabulary.items():
-            if token_id == self.eos_token_id:
-                for state in self.finals:
-                    fst_map[state][token_id] = (self.initial, (self.final_map[state], END_TERMINAL))
-            else:
-                cached_result = trie.traverse(token).cache
-                for src, (dest, out) in cached_result.items():
-                    fst_map[src][token_id] = (dest, out)
+        for state in self.finals:
+            fst_map[state][trie.count] = (self.initial, (self.final_map[state], END_TERMINAL))
 
-        del trie
+        for node_id, node in leaf_nodes.items():
+            for src, (dest, out) in node.cache.items():
+                fst_map[src][node_id] = (dest, out)
+
+        eos_node = TokenTrieNode(trie.count)
+        eos_node.tokens.append(self.eos_token_id)
+        leaf_nodes[trie.count] = eos_node
+
+        end_t = time.time()
+        print(f"FST map construction: {end_t - start_t} s")
 
         # Remove trap states from map
-        dummy_states = []
-        for state, d in fst_map.items():
-            if len(d) == 0:
-                dummy_states.append(state)
-        
+        dummy_states = [state for state, transitions in fst_map.items() if not transitions]
         for state in dummy_states:
             del fst_map[state]
 
+        self.trie = trie
+        self.leaf_nodes = leaf_nodes
+        self.eos_node_id = trie.count
         self.map = fst_map
 
     def _compute_reachable_terminals_single(self, state: State) -> Iterable[str]:
@@ -236,10 +278,20 @@ class PartialLexerFST(BasicLexer):
             `State`: destination state
             `Iterable[TerminalDef]`: lexed tokens
         """
-        if not (state in self.map and token_id in self.map[state]):
+
+        if state not in self.map:
             return None
 
-        return self.map[state][token_id]
+        if token_id == self.eos_token_id:
+            node_id = self.eos_node_id
+        else:
+            node = self.trie.traverse(self.vocabulary[token_id])
+            node_id = node.id
+
+        if node_id not in self.map[state]:
+            return None
+
+        return self.map[state][node_id]
 
 # These methods are modified from the implementation of interegular package:
 # https://github.com/MegaIng/interegular

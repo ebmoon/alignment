@@ -7,14 +7,18 @@ from lark.parsers.lalr_analysis import (
     StateT as StateP
 )
 
+from collections import defaultdict
+
 from .partial_lexer import PartialLexerFST
 
 if TYPE_CHECKING:
     from interegular.fsm import State as StateL
 
 class TerminalTrieNode:
-    def __init__(self, parent=None):
+    def __init__(self, node_id, parent=None):
         self.parent = parent
+        self.node_id = node_id
+        self.is_whole = False
         self.children = {}
         self.cache = {}
 
@@ -23,14 +27,21 @@ class TerminalTrie:
     A trie of possible outputs of partial lexer FST
     """
     def __init__(self):
-        self.root = TerminalTrieNode()
+        self.root = TerminalTrieNode(0)
+        self.count = 1
 
     def insert(self, terminals):
         node = self.root
         for terminal in terminals:
             if terminal not in node.children:
-                node.children[terminal] = TerminalTrieNode(node)
+                child_node = TerminalTrieNode(self.count, parent=node)
+                self.count += 1
+                
+                node.children[terminal] = child_node
+
             node = node.children[terminal]
+        
+        node.is_whole = True
 
     def traverse(self, terminals):
         node = self.root
@@ -50,22 +61,20 @@ class TokenParsingTable:
             terminal_table: ParseTableBase,
             eos_token_id: int,
             start: str,
-            valid_pairs: Dict["StateL", StateP],
-            reachable_terminals: Dict["StateL", Iterable[str]]
+            lexer: PartialLexerFST
         ):
         self.token_table = token_table
         self.terminal_table = terminal_table
         self.eos_token_id = eos_token_id
         self.start_state = terminal_table.start_states[start]
         self.end_state = terminal_table.end_states[start]
-        self.valid_pairs = valid_pairs
-        self.reachable_terminals = reachable_terminals
+        self.lexer = lexer
 
     def acceptance(
             self,
             lexer_state: "StateL",
             stack: Iterable[StateP]
-        ) -> Dict[int, Tuple["StateL", Iterable[StateP]]]:
+        ) -> Dict[int, Iterable[StateP]]:
         """
         Compute the set up accepted tokens from the current state, 
         and their corresponding next states after transition.
@@ -76,45 +85,37 @@ class TokenParsingTable:
             stack(`Iterable[StateP]`): the current stack of LR parser
 
         Returns:
-            Dict[token_id, (lexer_state', parser_state', stack')]:
+            Dict[token_id, stack']:
                 a map from allowed token_id to the state after transition
         """
         
+        reachable_terminals = self.lexer.reachable_terminals
+
         parser_state = stack[-1]
-        if (lexer_state, parser_state) not in self.token_table:
+        if self.token_table[lexer_state][parser_state] is None:
             return {}
 
         accepted = {}
-        transitions = self.token_table[lexer_state, parser_state]
-        for tokens, lexer_dest, stack_push, terminals in transitions:
-            if len(terminals) > 0:
+        transitions = self.token_table[lexer_state][parser_state]
+        for tokens, stack_push, terminals in transitions:
+            if terminals:
                 # Check if terminals can be consumed by the current stack
                 stack_updated = self._feed_terminals(stack[:-1] + stack_push, terminals)
                 if stack_updated:
                     parser_dest = stack_updated[-1]
 
-                    for k in tokens:
-                        if k == self.eos_token_id and parser_dest == self.end_state:
-                            accepted[k] = (lexer_dest, stack_updated)
-                        else:
-                            for reachable_terminal in self.reachable_terminals[lexer_dest]:
-                                acceptable = self._feed_terminals(stack_updated, [reachable_terminal])
-                                if acceptable:
-                                    accepted[k] = (lexer_dest, stack_updated)
-                                    break
+                    if self.eos_token_id in tokens:
+                        if parser_dest == self.end_state:
+                            accepted[self.eos_token_id] = stack_updated
+                    else:
+                        for k in tokens:
+                            accepted[k] = stack_updated
+
             else:
                 # if there is no remaining terminals, the last action must be shift
+                stack_updated = stack[:-1] + stack_push
                 for k in tokens:
-                    stack_updated = stack[:-1] + stack_push
-                    parser_dest = stack_updated[-1]
-                    if k == self.eos_token_id and parser_dest == self.end_state:
-                        accepted[k] = (lexer_dest, stack_updated)
-                    else:
-                        for reachable_terminal in self.reachable_terminals[lexer_dest]:
-                            acceptable = self._feed_terminals(stack_updated, [reachable_terminal])
-                            if acceptable:
-                                accepted[k] = (lexer_dest, stack_updated)
-                                break
+                    accepted[k] = stack_updated
 
         return accepted
 
@@ -127,6 +128,7 @@ class TokenParsingTable:
         parse_table = self.terminal_table
 
         for terminal in terminals:
+            prev_stack = stack
             while True:
                 parser_state = stack[-1]
                 if parser_state not in parse_table.states:
@@ -162,7 +164,7 @@ class TokenParsingTable:
                     else:
                         return None
 
-        return stack
+        return prev_stack
 
     @classmethod
     def from_terminal_parse_table(
@@ -184,48 +186,28 @@ class TokenParsingTable:
             `TokenParsingTable`: a token-level parse table
         """
 
-        valid_pairs = {}
         end_state = parse_table.end_states[start]
-
-        # Build invalid pairs of lexer state and parser state
-        for lexer_state in lexing_fst.states:
-            valid_pairs[lexer_state] = set()
-            for parser_state in parse_table.states:
-                valid_terminals = set(parse_table.states[parser_state].keys())
-                reachable_terminals = lexing_fst.reachable_terminals[lexer_state]
-
-                if len(valid_terminals & reachable_terminals) > 0:
-                    valid_pairs[lexer_state].add(parser_state)
 
         # Build prefix trie of possible terminal sequences
         trie = TerminalTrie()
-        group_by_terminals = {}
+        group_by_terminals = defaultdict(set)
         for src, transition in lexing_fst.map.items():
-            for token_id, (dest, terminals) in transition.items():
-                if token_id == eos_token_id:
+            for token_node_id, (dest, terminals) in transition.items():
+                if token_node_id == lexing_fst.eos_node_id:
                     trie.insert(terminals)
 
                     # Store (src, dest) pairs for each terminal for later use
                     terminals_tuple = tuple(terminals)
-                    if terminals_tuple not in group_by_terminals:
-                        group_by_terminals[terminals_tuple] = {}
-                    if (src, dest) not in group_by_terminals[terminals_tuple]:
-                        group_by_terminals[terminals_tuple][src, dest] = set()
-                    group_by_terminals[terminals_tuple][src, dest].add(token_id)                    
+                    group_by_terminals[src, terminals_tuple].add(token_node_id)                    
 
-                    continue
+                else:
+                    for reachable_terminal in lexing_fst.reachable_terminals[dest]:
+                        extended_terminals = terminals + (reachable_terminal,)
+                        trie.insert(extended_terminals)
 
-                for reachable_terminal in lexing_fst.reachable_terminals[dest]:
-                    extended_terminals = terminals + (reachable_terminal,)
-                    trie.insert(extended_terminals)
-
-                    # Store (src, dest) pairs for each terminal for later use
-                    terminals_tuple = tuple(extended_terminals)
-                    if terminals_tuple not in group_by_terminals:
-                        group_by_terminals[terminals_tuple] = {}
-                    if (src, dest) not in group_by_terminals[terminals_tuple]:
-                        group_by_terminals[terminals_tuple][src, dest] = set()
-                    group_by_terminals[terminals_tuple][src, dest].add(token_id)
+                        # Store (src, dest) pairs for each terminal for later use
+                        terminals_tuple = tuple(extended_terminals)
+                        group_by_terminals[src, terminals_tuple].add(token_node_id)          
 
         import time
         start_t = time.time()
@@ -240,49 +222,37 @@ class TokenParsingTable:
         print(f"Precomputation for terminal trie: {end_t - start_t} s")
 
         # Build fused parse table
-        token_table = {
-            (lexer_state, parser_state):[] 
-            for lexer_state in lexing_fst.states 
-            for parser_state in parse_table.states}
+        token_table = [[[] for _ in parse_table.states] for _ in lexing_fst.states]
 
         start_t = time.time()
 
-        for terminals, lexer_transitions in group_by_terminals.items():
+        for (lexer_src, terminals), node_ids in group_by_terminals.items():
             node = trie.traverse(terminals)
+            tokens = {token for node_id in node_ids for token in lexing_fst.leaf_nodes[node_id].tokens}
 
-            for (lexer_src, lexer_dest), tokens in lexer_transitions.items():
-                for parser_src in valid_pairs[lexer_src]:
-                    if parser_src not in node.cache:
-                        continue
-
-                    if eos_token_id in tokens:
-                        stack, remainder = node.cache[parser_src]
-                        parser_dest = stack[-1]
-
-                        if len(remainder) > 0 or parser_dest == end_state:
-                            token_table[lexer_src, parser_src].append((tokens, lexer_dest, stack, remainder))
-                    
-                    else:
-                        stack, remainder = node.parent.cache[parser_src]
-                        parser_dest = stack[-1]
-
-                        token_table[lexer_src, parser_src].append((tokens, lexer_dest, stack, remainder))
-
-                    
+            for parser_src, (stack, remainder) in node.cache.items():
+                if remainder:
+                    token_table[lexer_src][parser_src].append((tokens, stack, remainder))
+                elif lexing_fst.eos_node_id in node_ids:
+                    if stack[-1] == end_state:
+                        token_table[lexer_src][parser_src].append((tokens, stack, remainder))
+                else:
+                    stack, remainder = node.parent.cache[parser_src]
+                    token_table[lexer_src][parser_src].append((tokens, stack, remainder))
 
         end_t = time.time()
         print(f"Parser table construction: {end_t - start_t} s")
 
         # Remove dummy lexer-parser state pairs
-        dummy_pairs = []
-        for (lexer_src, parser_src), d in token_table.items():
-            if len(d) == 0:
-                dummy_pairs.append((lexer_src, parser_src))
-        
-        for lexer_src, parser_src in dummy_pairs:
-            del token_table[lexer_src, parser_src]
+        dummy_pairs = [(lexer_src, parser_src) 
+            for lexer_src in lexing_fst.states 
+            for parser_src in parse_table.states
+            if not token_table[lexer_src][parser_src]]
 
-        return cls(token_table, parse_table, eos_token_id, start, valid_pairs, lexing_fst.reachable_terminals)
+        for lexer_src, parser_src in dummy_pairs:
+            token_table[lexer_src][parser_src] = None
+
+        return cls(token_table, parse_table, eos_token_id, start, lexing_fst)
 
 def _compute_transition_dfs(
     parse_table: ParseTableBase,
@@ -297,7 +267,7 @@ def _compute_transition_dfs(
     result = {}
 
     for src, (stack, remainder) in prev_result.items():
-        if len(remainder) > 0:
+        if remainder:
             result[src] = (stack, remainder + [terminal])
             continue
 
@@ -314,7 +284,7 @@ def _compute_transition_dfs(
             action, arg = table_for_state[terminal]
             if action is Shift:
                 parser_state = arg
-                result[src] = (stack + [parser_state], remainder)
+                result[src] = (stack + [parser_state], [])
                 break
 
             else:   # Reduce
@@ -337,12 +307,12 @@ def _compute_transition_dfs(
                         break
 
                 else:   # can't be precomputed from here
-                    result[src] = (stack, remainder + [terminal])
+                    result[src] = (stack, [terminal])
                     break
 
     node.cache = result
 
-    for char, child in node.children.items():
-        _compute_transition_dfs(parse_table, end_state, child, char, result)
+    for terminal, child in node.children.items():
+        _compute_transition_dfs(parse_table, end_state, child, terminal, result)
 
     return result
