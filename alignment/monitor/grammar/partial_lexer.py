@@ -126,7 +126,7 @@ class PartialLexerFST(BasicLexer):
         return False
 
     def _build_fsm(self):
-        terminals = sorted(self.terminals, key=lambda t: t.priority)
+        terminals = sorted(self.terminals, key=lambda t: (t.priority, t.pattern.type != 'str'))
         terminal_map = {i:t for i, t in enumerate(terminals)}
         regexps = [t.pattern.to_regexp() for t in terminal_map.values()]
         fsms = [parse_pattern(exp).to_fsm() for exp in regexps]
