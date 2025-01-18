@@ -167,9 +167,9 @@ class PartialLexerFST(BasicLexer):
             if not (dest in self.fsm.map and transition in self.fsm.map[dest]):
                 if dest in self.finals and transition in self.fsm.map[self.initial]:
                     # Case 2: the transition stuck at a final state
-                    result[src] = (
-                        self.fsm.map[self.initial][transition], 
-                        out + (self.final_map[dest],))
+                    out = out if self.final_map[dest] in self.ignore_types \
+                              else out + (self.final_map[dest],)
+                    result[src] = (self.fsm.map[self.initial][transition], out)
 
             # Case 1: the input can be partially matched to a terminal
             else:

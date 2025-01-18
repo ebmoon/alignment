@@ -3,6 +3,18 @@ from lark import Lark
 
 from alignment.monitor.grammar.cfg_monitor import CFGMonitor
 
+def to_vocab(l):
+    vocab, rev_vocab = {}, {}
+    for i, elem in enumerate(l):
+        vocab[i] = elem
+        rev_vocab[elem] = i
+
+    eos_idx = len(vocab)
+    vocab[eos_idx] = 'EOS'
+    rev_vocab['EOS'] = eos_idx
+
+    return vocab, rev_vocab, eos_idx
+
 class CFTMonitorTest(TestCase):
     """Unit test for PartialLexerFST class"""
 
@@ -40,6 +52,15 @@ class CFTMonitorTest(TestCase):
         self.assertTrue(3 not in state.acceptance)
 
         state = state.feed_token(0)
+
+        print(state.lexer_state, state.stack)
+        print(state.lexer.map)
+
+        print(state.parse_table.terminal_table)
+        print(state.parse_table.token_table)
+
+        for node_id, node in state.lexer.leaf_nodes.items():
+            print(node_id, node.tokens)
 
         self.assertTrue(0 not in state.acceptance)
         self.assertTrue(4 not in state.acceptance)
@@ -186,15 +207,11 @@ class CFTMonitorTest(TestCase):
         monitor = CFGMonitor(grammar_str, vocabulary, eos_token_id=6)
 
         state = monitor.state[0]
-        print(state.lexer_state, state.stack)
-        print("")
 
         self.assertTrue(6 not in state.acceptance)
         self.assertTrue(len(state.acceptance) == 6)
 
         state = state.feed_token(4)
-        print(state.lexer_state, state.stack)
-        print("")
 
         self.assertTrue(0 in state.acceptance)
         self.assertTrue(1 in state.acceptance)
@@ -206,19 +223,36 @@ class CFTMonitorTest(TestCase):
 
         state = state.feed_token(3)
 
-        print(state.lexer_state, state.stack)
-        print("")
-
-        print(state.parse_table.terminal_table.states)
-        print("")
-
-        print(state.lexer.map)
-        print("")
-
-        print(state.parse_table.token_table)
-        print("")
-
-        print(state.acceptance)
-
         self.assertTrue(6 in state.acceptance)
         self.assertTrue(len(state.acceptance) == 1)
+
+    def test_ws_ignore(self):
+        grammar_str = """
+        start: compilation_unit
+
+        compilation_unit: package_decl
+
+        package_decl: "package" name ";"
+
+        name: CNAME | CNAME "." name
+
+        %ignore WS
+
+        %import common.CNAME
+        %import common.WS"""
+
+        l = ['p', 'a', 'c', 'k', 'g', 'e', 'b', 'ac', 'pa', 'age', 'ge', 'ack', ';', '.', '..', 'a.', ' ']
+        vocabulary, rev, eos_token_id = to_vocab(l)
+        monitor = CFGMonitor(grammar_str, vocabulary, eos_token_id=eos_token_id)
+
+        state = monitor.state[0]
+
+        state = state.feed_token(rev['p'])
+        state = state.feed_token(rev['a'])
+        state = state.feed_token(rev['c'])
+        state = state.feed_token(rev['k'])
+        state = state.feed_token(rev['age'])
+
+        state = state.feed_token(rev[' '])
+
+        self.assertTrue(rev[' '] in state.acceptance)

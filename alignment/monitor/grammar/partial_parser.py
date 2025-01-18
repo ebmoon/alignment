@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Iterable, Optional, Self, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Iterable, Optional, Self, Set, Tuple
 
 from lark.lexer import TerminalDef
 from lark.parsers.lalr_analysis import (
@@ -129,6 +129,10 @@ class TokenParsingTable:
 
         for terminal in terminals:
             prev_stack = stack
+
+            if terminal in self.lexer.ignore_types:
+                continue
+
             while True:
                 parser_state = stack[-1]
                 if parser_state not in parse_table.states:
@@ -216,7 +220,8 @@ class TokenParsingTable:
         id_map = {state:([state], []) for state in parse_table.states}
         trie.root.cache = id_map
         for terminal, child in trie.root.children.items():
-            _compute_transition_dfs(parse_table, end_state, child, terminal, id_map)
+            _compute_transition_dfs(
+                lexing_fst.ignore_types, parse_table, end_state, child, terminal, id_map)
 
         end_t = time.time()
         print(f"Precomputation for terminal trie: {end_t - start_t} s")
@@ -255,6 +260,7 @@ class TokenParsingTable:
         return cls(token_table, parse_table, eos_token_id, start, lexing_fst)
 
 def _compute_transition_dfs(
+    ignore_types: Set[str],
     parse_table: ParseTableBase,
     end_state: StateP,
     node: TerminalTrieNode, 
@@ -264,55 +270,60 @@ def _compute_transition_dfs(
     """
     Update the map (src_state) -> (stack, remainder) for the current node.
     """
+
     result = {}
+    if terminal in ignore_types:
+        result = prev_result
 
-    for src, (stack, remainder) in prev_result.items():
-        if remainder:
-            result[src] = (stack, remainder + [terminal])
-            continue
+    else:
+        for src, (stack, remainder) in prev_result.items():
+            if remainder:
+                result[src] = (stack, remainder + [terminal])
+                continue
 
-        # Follow parser table as long as possible
-        while True:
-            parser_state = stack[-1]
-            if parser_state not in parse_table.states:
-                break
-
-            table_for_state = parse_table.states[parser_state]
-            if terminal not in table_for_state:
-                break
-            
-            action, arg = table_for_state[terminal]
-            if action is Shift:
-                parser_state = arg
-                result[src] = (stack + [parser_state], [])
-                break
-
-            else:   # Reduce
-                rule = arg
-                size = len(rule.expansion)
-
-                if size < len(stack):
-                    if size:
-                        stack = stack[:-size]
-
-                    state = stack[-1]
-                    nt_name = rule.origin.name
-                    _action, parser_state = parse_table.states[state][nt_name]
-                
-                    assert _action is Shift
-                    stack = stack + [parser_state]
-
-                    if parser_state == end_state:
-                        result[src] = (stack, [])
-                        break
-
-                else:   # can't be precomputed from here
-                    result[src] = (stack, [terminal])
+            # Follow parser table as long as possible
+            while True:
+                parser_state = stack[-1]
+                if parser_state not in parse_table.states:
                     break
+
+                table_for_state = parse_table.states[parser_state]
+                if terminal not in table_for_state:
+                    break
+                
+                action, arg = table_for_state[terminal]
+                if action is Shift:
+                    parser_state = arg
+                    result[src] = (stack + [parser_state], [])
+                    break
+
+                else:   # Reduce
+                    rule = arg
+                    size = len(rule.expansion)
+
+                    if size < len(stack):
+                        if size:
+                            stack = stack[:-size]
+
+                        state = stack[-1]
+                        nt_name = rule.origin.name
+                        _action, parser_state = parse_table.states[state][nt_name]
+                    
+                        assert _action is Shift
+                        stack = stack + [parser_state]
+
+                        if parser_state == end_state:
+                            result[src] = (stack, [])
+                            break
+
+                    else:   # can't be precomputed from here
+                        result[src] = (stack, [terminal])
+                        break
 
     node.cache = result
 
     for terminal, child in node.children.items():
-        _compute_transition_dfs(parse_table, end_state, child, terminal, result)
+        _compute_transition_dfs(
+            ignore_types, parse_table, end_state, child, terminal, result)
 
     return result
