@@ -53,15 +53,6 @@ class CFTMonitorTest(TestCase):
 
         state = state.feed_token(0)
 
-        print(state.lexer_state, state.stack)
-        print(state.lexer.map)
-
-        print(state.parse_table.terminal_table)
-        print(state.parse_table.token_table)
-
-        for node_id, node in state.lexer.leaf_nodes.items():
-            print(node_id, node.tokens)
-
         self.assertTrue(0 not in state.acceptance)
         self.assertTrue(4 not in state.acceptance)
         self.assertTrue(5 not in state.acceptance)

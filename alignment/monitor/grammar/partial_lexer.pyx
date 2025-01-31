@@ -24,6 +24,7 @@ class TokenTrieNode:
         self.children = {}
         self.cache = {}
         self.tokens = []
+        self.is_leaf = False
 
 class TokenTrie:
     """
@@ -48,6 +49,7 @@ class TokenTrie:
             node = node.children[transition]
 
         node.tokens.append(token_id)
+        node.is_leaf = True
 
         return node
 
@@ -150,7 +152,7 @@ class PartialLexerFST(BasicLexer):
         node: TokenTrieNode, 
         transition: TransitionKey, 
         prev_result: Dict[State, Tuple[State, List[str]]]
-    ) -> Dict[State, Tuple[State, List[str]]]:
+    ):
         """
         Update the map (src_state) -> (dest_state, output_terminals) for the current node.
 
@@ -175,12 +177,13 @@ class PartialLexerFST(BasicLexer):
             else:
                 result[src] = (self.fsm.map[dest][transition], out)
 
-        node.cache = result
-
         for transition, child in node.children.items():
             self._compute_transition_dfs(child, transition, result)
 
-        return result
+        if node.is_leaf:
+            node.cache = result
+        else:
+            del result
 
     def _build_map(self):
         # Build prefix trie of vocabulary tokens
@@ -222,6 +225,7 @@ class PartialLexerFST(BasicLexer):
 
         eos_node = TokenTrieNode(trie.count)
         eos_node.tokens.append(self.eos_token_id)
+        eos_node.is_leaf = True
         leaf_nodes[trie.count] = eos_node
 
         end_t = time.time()
