@@ -111,7 +111,6 @@ class TokenParsingTable:
             if terminals:
                 # Check if terminals can be consumed by the current stack
                 stack_updated = self._feed_terminals(stack[:-1] + stack_push, terminals)
-                # print(stack, terminals, stack_updated)
                 if stack_updated:
                     parser_dest = stack_updated[-1]
 
@@ -262,9 +261,6 @@ class TokenParsingTable:
                         terminals_tuple = tuple(extended_terminals)
                         group_by_terminals[src, terminals_tuple].add(token_node_id)          
 
-        import time
-        start_t = time.time()
-
         # Update transition map for each terminal sequences
         id_map = {state:([state], []) for state in parse_table.states}
         trie.root.cache = id_map
@@ -272,13 +268,8 @@ class TokenParsingTable:
             _compute_transition_dfs(
                 lexing_fst.ignore_types, parse_table, end_state, child, terminal, id_map)
 
-        end_t = time.time()
-        print(f"Precomputation for terminal trie: {end_t - start_t} s")
-
         # Build fused parse table
         token_table = [[[] for _ in parse_table.states] for _ in lexing_fst.states]
-
-        start_t = time.time()
 
         for (lexer_src, terminals), node_ids in group_by_terminals.items():
             node = trie.traverse(terminals)
@@ -293,9 +284,6 @@ class TokenParsingTable:
                 else:
                     stack, remainder = node.parent.cache[parser_src]
                     token_table[lexer_src][parser_src].append((tokens, stack, remainder))
-
-        end_t = time.time()
-        print(f"Parser table construction: {end_t - start_t} s")
 
         del group_by_terminals
         del trie

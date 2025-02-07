@@ -98,34 +98,17 @@ class CFGMonitor(Monitor):
         return CFGMonitor(grammar_str, id_to_token, eos_token_id, num_batch)
 
     def _initialize_state(self):
-        
-        start_t = time.time()
 
         lark_parser = Lark(self.grammar_str, parser='lalr')
         terminal_parse_table = lark_parser.parser.parser._parse_table
         start = lark_parser.parser.parser_conf.start[0]
 
-        end_t = time.time()
-        print(f"Lark processing: {end_t - start_t} s")
-        print(f"Num parser states: {len(terminal_parse_table.states)}")
-
-        start_t = time.time()
-
         lexer = PartialLexerFST(lark_parser.lexer_conf, self.vocabulary, self.eos_token_id)
         lexer_state = lexer.initial
         stack = [terminal_parse_table.start_states[start]]
 
-        end_t = time.time()
-        print(f"Lexer processing: {end_t - start_t} s")
-        print(f"Num lexer states: {len(lexer.states)}")
-
-        start_t = time.time()
-
         parse_table = TokenParsingTable.from_terminal_parse_table(
             lexer, terminal_parse_table, self.eos_token_id, start)
-
-        end_t = time.time()
-        print(f"Lexer-parser fusion: {end_t - start_t} s")
 
         self.initial_state = CFGMonitorState(lexer_state, stack, lexer, parse_table)
         self.state = [self.initial_state for _ in range(self.num_batch)]

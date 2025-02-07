@@ -190,29 +190,16 @@ class PartialLexerFST(BasicLexer):
         trie = TokenTrie(self.fsm.alphabet)
         leaf_nodes = {}
 
-        import time
-        start_t = time.time()
-
         for token_id, token in self.vocabulary.items():
             if token_id != self.eos_token_id:
                 node = trie.insert(token_id, token)
 
                 leaf_nodes[node.id] = node
 
-        end_t = time.time()
-        print(f"Token trie construction: {end_t - start_t} s")
-
-        start_t = time.time()
-
         # Update transition map
         id_map = {state:(state, tuple()) for state in self.states}
         for transition, child in trie.root.children.items():
             self._compute_transition_dfs(child, transition, id_map)
-
-        end_t = time.time()
-        print(f"Precomputation for token trie: {end_t - start_t} s")
-
-        start_t = time.time()
 
         # Build FST map
         fst_map = {state:{} for state in self.states}
@@ -227,9 +214,6 @@ class PartialLexerFST(BasicLexer):
         eos_node.tokens.append(self.eos_token_id)
         eos_node.is_leaf = True
         leaf_nodes[trie.count] = eos_node
-
-        end_t = time.time()
-        print(f"FST map construction: {end_t - start_t} s")
 
         # Remove trap states from map
         dummy_states = [state for state, transitions in fst_map.items() if not transitions]
