@@ -139,7 +139,7 @@ class TokenParsingTable:
 
         stack = list(stack)
 
-        for terminal in terminals[:-1]:
+        for i, terminal in enumerate(terminals[:-1]):
             if terminal in self.lexer.ignore_types:
                 continue
 
@@ -172,7 +172,9 @@ class TokenParsingTable:
                         assert _action is Shift
                         stack.append(parser_state)
 
-                        if parser_state == self.end_state:
+                        if parser_state == self.end_state \
+                            and i == len(terminals) - 2 \
+                            and terminals[-1] in self.lexer.ignore_types:
                             return stack
 
                     else:

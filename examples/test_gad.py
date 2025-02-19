@@ -30,7 +30,7 @@ model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
 model.to(device)
 model.to(dtype=DTYPE)
 model.resize_token_embeddings(len(tokenizer))
-model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+# model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
 model = TransformersModel(model, tokenizer)
 
@@ -61,11 +61,7 @@ model = TransformersModel(model, tokenizer)
 # """
 
 grammar_str = """
-    ?start : "00000"
-        | "10000" | "10001" | "10010" | "10011"
-        | "10100" | "10101" | "10110" | "10111"
-        | "11000" | "11001" | "11010" | "11011"
-        | "11100" | "11101" | "11110" | "11111"
+    ?start : "" | "(" start ")" start 
 """
 
 # Initialize logits processor for the grammar
@@ -73,7 +69,7 @@ inf_nan_remove_processor = InfNanRemoveLogitsProcessor()
 logits_processors = LogitsProcessorList([inf_nan_remove_processor])
 
 # Tokenize prompt into ids
-prompt = "Generate a binary string that ends with 1"
+prompt = "Generate a string with balanced parentheses."
 decode_output = tokenizer(
     [prompt], add_special_tokens=False, return_tensors="pt", padding=True
 )

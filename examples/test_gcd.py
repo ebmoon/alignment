@@ -5,31 +5,33 @@ from transformers.generation.logits_process import LogitsProcessorList, InfNanRe
 from alignment.monitor.grammar import CFGMonitor
 from alignment.models import TransformersModel
 
-NUM_ITER = 50
+NUM_ITER = 1
 # MODEL_ID = "TinyLlama/TinyLlama_v1.1"
-MODEL_ID = "Salesforce/codegen-350M-multi"
+MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
 GRAMMAR_PATH = "examples/test/binary_len_5_0.ebnf"
 TRIE_PATH = "tries/binary_len_5_0_trie.json"
-DEVICE = "cpu"
+DEVICE = "cuda"
 DTYPE = torch.bfloat16
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 8
 TEMPERATURE = 1.0
 REPETITION_PENALTY = 1.0
 TOP_P = 1.0
 TOP_K = 0
 
+cache_dir = "/trunk/model-hub"
+
 device = torch.device(DEVICE)
 
 # Load tokenizer
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=cache_dir)
 tokenizer.pad_token = tokenizer.eos_token
 
 # Load model
-model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, cache_dir=cache_dir)
 model.to(device)
 model.to(dtype=DTYPE)
 model.resize_token_embeddings(len(tokenizer))
-model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+# model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
 model = TransformersModel(model, tokenizer)
 
@@ -60,11 +62,7 @@ model = TransformersModel(model, tokenizer)
 # """
 
 grammar_str = """
-    ?start : "00000"
-        | "10000" | "10001" | "10010" | "10011"
-        | "10100" | "10101" | "10110" | "10111"
-        | "11000" | "11001" | "11010" | "11011"
-        | "11100" | "11101" | "11110" | "11111"
+    ?start :  | "(" start ")" start 
 """
 
 # Initialize logits processor for the grammar
@@ -72,7 +70,12 @@ inf_nan_remove_processor = InfNanRemoveLogitsProcessor()
 logits_processors = LogitsProcessorList([inf_nan_remove_processor])
 
 # Tokenize prompt into ids
-prompt = "Generate a binary string that ends with 1"
+prompt = """Give me an arbitrary string of balanced parentheses.
+The string must contain only parentheses no other characters.
+The string must contain 3 pairs of parentheses.
+The string must be chosen arbitrarily at random from all such valid strings.
+Return only the requested string with no other text or explanations."""
+
 decode_output = tokenizer(
     [prompt], add_special_tokens=False, return_tensors="pt", padding=True
 )
@@ -102,7 +105,6 @@ for _ in tqdm(range(NUM_ITER), desc="Running Inference"):
         num_return_sequences=1,
         return_dict_in_generate=True,
         output_scores=True,
-        cache_implementation="static",
         attention_mask=attention_mask,
         # jump_forward=False,
         monitor=monitor
