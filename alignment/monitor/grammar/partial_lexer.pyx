@@ -205,6 +205,9 @@ class PartialLexerFST(BasicLexer):
         fst_map = {state:{} for state in self.states}
         for state in self.finals:
             fst_map[state][trie.count] = (self.initial, (self.final_map[state], END_TERMINAL))
+        
+        # To allow empty input
+        fst_map[self.initial][trie.count] = (self.initial, (END_TERMINAL,))
 
         for node_id, node in leaf_nodes.items():
             for src, (dest, out) in node.cache.items():

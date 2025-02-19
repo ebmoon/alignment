@@ -257,6 +257,17 @@ class CFTMonitorTest(TestCase):
 
         state = monitor.state[0]
 
+        self.assertTrue(0 in state.acceptance)
+        self.assertTrue(1 in state.acceptance)
+        self.assertTrue(2 not in state.acceptance)
+        self.assertTrue(3 in state.acceptance)
+        self.assertTrue(4 not in state.acceptance)
+        self.assertTrue(5 not in state.acceptance)
+        self.assertTrue(6 not in state.acceptance)
+        self.assertTrue(7 in state.acceptance)
+        self.assertTrue(8 in state.acceptance)
+        self.assertTrue(eos_token_id in state.acceptance)
+
         # print(state.lexer_state, state.stack)
         # print(state.acceptance)
         # print([vocabulary[i] for i in state.acceptance.keys()])
@@ -270,10 +281,25 @@ class CFTMonitorTest(TestCase):
         # print(state.lexer.map)
         # print()
 
+        # print([(k, v.tokens) for k, v in state.lexer.leaf_nodes.items()])
+        # print()
+
+        # print(state.lexer.reachable_terminals)
+        # print()
+
         # print(state.parse_table.terminal_table.states)
         # print()
 
-        # print(state.parse_table.token_table)
+        # print(state.parse_table.token_table[state.lexer_state][state.stack[-1]])
         # print()
 
-        self.assertTrue(False)
+        self.assertTrue(0 in state.acceptance)
+        self.assertTrue(1 in state.acceptance)
+        self.assertTrue(2 not in state.acceptance)
+        self.assertTrue(3 in state.acceptance)
+        self.assertTrue(4 not in state.acceptance)
+        self.assertTrue(5 not in state.acceptance)
+        self.assertTrue(6 not in state.acceptance)
+        self.assertTrue(7 in state.acceptance)
+        self.assertTrue(8 in state.acceptance)
+        self.assertTrue(eos_token_id in state.acceptance)

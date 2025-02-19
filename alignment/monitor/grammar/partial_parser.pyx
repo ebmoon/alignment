@@ -9,7 +9,7 @@ from lark.parsers.lalr_analysis import (
 
 from collections import defaultdict
 
-from .partial_lexer import PartialLexerFST
+from .partial_lexer import PartialLexerFST, END_TERMINAL
 
 if TYPE_CHECKING:
     from interegular.fsm import State as StateL
@@ -172,10 +172,9 @@ class TokenParsingTable:
                         assert _action is Shift
                         stack.append(parser_state)
 
-                        if parser_state == self.end_state \
-                            and i == len(terminals) - 2 \
-                            and terminals[-1] in self.lexer.ignore_types:
-                            return stack
+                        # EOS token can only come at the end of the terminal sequence
+                        if parser_state == self.end_state:
+                            return None
 
                     else:
                         return None
@@ -212,7 +211,7 @@ class TokenParsingTable:
                     assert _action is Shift
                     stack = stack + [parser_state]
 
-                    if parser_state == self.end_state:
+                    if parser_state == self.end_state and terminal == END_TERMINAL:
                         return stack
 
                 else:
