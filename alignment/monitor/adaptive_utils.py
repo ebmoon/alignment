@@ -19,10 +19,8 @@ class AdaptiveMask:
         Construct logit mask from approximated success rates of children.
 
         Args:
-            batch_size (`int`):
-                The size of batch.
-            vocab_size (`int`):
-                The number of tokens in the vocabulary.
+            batch_size (`int`): The size of batch.
+            vocab_size (`int`): The number of tokens in the vocabulary.
 
         Return:
             `torch.FloatTensor` of shape `(batch_size, vocab_size)
@@ -120,7 +118,8 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
         self,
         acceptance: torch.LongTensor,
         scores: torch.FloatTensor,
-        eos_token_id: int
+        eos_token_id: int,
+        delay_propagation: bool
     ):
         """
         Update children from the list of accepted tokens and their scores.
@@ -153,7 +152,8 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
                 raw_likelihood = likelihoods[token_id].item()
                 self.children[token_id].raw_likelihood = raw_likelihood
         
-        self._update_success_rate()
+        if not delay_propagation:
+            self.update_success_rate()
 
     def mask(self, vocab_size: int) -> torch.FloatTensor:
         """
@@ -177,7 +177,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
 
         return mask
 
-    def _update_success_rate(self):
+    def update_success_rate(self):
         """
         Re-compute the success rate from the updated success rate of children
         """
@@ -189,7 +189,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
 
         # Back propagate the success rate
         if self.parent:
-            self.parent._update_success_rate()
+            self.parent.update_success_rate()
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -291,7 +291,8 @@ class AdaptiveMaskTrie(AdaptiveMask):
         acceptance: Iterable[torch.LongTensor],
         scores: torch.FloatTensor,
         eos_token_id: int,
-        states: Optional[Iterable[AdaptiveMaskTrieNode]] = None
+        states: Optional[Iterable[AdaptiveMaskTrieNode]] = None,
+        delay_propagation: bool = False
     ) -> AdaptiveMaskState:
         """
         Update children from the list of accepted tokens and their scores.
@@ -313,7 +314,14 @@ class AdaptiveMaskTrie(AdaptiveMask):
             states = self.states
 
         for i, state in enumerate(states):
-            state.update(acceptance[i], scores[i, :], eos_token_id)
+            state.update(acceptance[i], scores[i, :], eos_token_id, delay_propagation)
+
+    def propagate_success_rate(self):
+        """
+        Re-compute the success rate from the updated success rate of children
+        """
+        for state in self.states:
+            state.update_success_rate()
 
     def feed_tokens(self, next_tokens: torch.LongTensor) -> Iterable[AdaptiveMaskState]:
         """

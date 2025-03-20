@@ -162,3 +162,8 @@ cython_debug/
 #.idea/
 
 *.DS_Store
+
+notebook/
+data/
+
+alignment/monitor/grammar/*.c

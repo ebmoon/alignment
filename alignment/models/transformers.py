@@ -564,6 +564,9 @@ class TransformersModel:
 
         vocab_size = len(self.tokenizer.get_vocab())
 
+        # vocabulary = self.tokenizer.get_vocab()
+        # vocab_rev = {v: k for k, v in vocabulary.items()}
+
         # initialize monitor state
         monitor.reset()
 
@@ -579,6 +582,10 @@ class TransformersModel:
             # 1. Check acceptable next tokens by monitor
             acceptance_batch = monitor.filter_vocab(input_ids)
             acceptance_batch_seq = [acceptance_batch]
+
+            # print(self.tokenizer.decode(input_ids[0]))
+            # print(acceptance_batch)
+            # print([vocab_rev[i.item()] for i in acceptance_batch[0]])
 
             acceptance = torch.full((batch_size, 1, vocab_size), False)
             for i in range(batch_size):
@@ -620,6 +627,10 @@ class TransformersModel:
 
                     acceptance_batch = monitor.filter_vocab(input_ids)
                     acceptance_batch_seq.append(acceptance_batch)
+
+                    # print(self.tokenizer.decode(input_ids[0]))
+                    # print(acceptance_batch)
+                    # print([vocab_rev[i.items()] for i in acceptance_batch[0]])
 
                     acceptance = torch.full((batch_size, 1, vocab_size), False)
                     for i in range(batch_size):
@@ -778,6 +789,9 @@ class TransformersModel:
 
         if streamer is not None:
             streamer.end()
+
+        if adaptive_mask:
+            adaptive_mask.propagate_success_rate()
 
         if return_dict_in_generate and self.model.config.is_encoder_decoder:
             return GenerateEncoderDecoderOutput(

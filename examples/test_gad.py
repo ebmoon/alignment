@@ -3,30 +3,31 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, StaticCache
 from transformers.generation.logits_process import LogitsProcessorList, InfNanRemoveLogitsProcessor
 from alignment.monitor.grammar import CFGMonitor
-from alignment.monitor.adaptive_utils import AdaptiveMaskTrie
 from alignment.models import TransformersModel
 
-NUM_ITER = 50
-MODEL_ID = "TinyLlama/TinyLlama_v1.1"
-# MODEL_ID = "Salesforce/codegen-350M-multi"
+NUM_ITER = 1
+# MODEL_ID = "TinyLlama/TinyLlama_v1.1"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 GRAMMAR_PATH = "examples/test/binary_len_5_0.ebnf"
 TRIE_PATH = "tries/binary_len_5_0_trie.json"
-DEVICE = "cpu"
+DEVICE = "cuda"
 DTYPE = torch.bfloat16
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 8
 TEMPERATURE = 1.0
 REPETITION_PENALTY = 1.0
 TOP_P = 1.0
 TOP_K = 0
 
+cache_dir = "/trunk/model-hub"
+
 device = torch.device(DEVICE)
 
 # Load tokenizer
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=cache_dir)
 tokenizer.pad_token = tokenizer.eos_token
 
 # Load model
-model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, cache_dir=cache_dir)
 model.to(device)
 model.to(dtype=DTYPE)
 model.resize_token_embeddings(len(tokenizer))
@@ -35,33 +36,9 @@ model.resize_token_embeddings(len(tokenizer))
 model = TransformersModel(model, tokenizer)
 
 
-# Load EBNF grammar
-# grammar_str = """
-#     ?start: sum
-#         | NAME "=" sum    
-
-#     ?sum: product
-#         | sum "+" product   
-#         | sum "-" product   
-
-#     ?product: atom
-#         | product "*" atom  
-#         | product "/" atom 
-
-#     ?atom: NUMBER           
-#         | "-" atom        
-#         | NAME            
-#         | "(" sum ")"
-
-#     %import common.CNAME -> NAME
-#     %import common.NUMBER
-#     %import common.WS_INLINE
-
-#     %ignore WS_INLINE
-# """
-
 grammar_str = """
-    ?start : "" | "(" start ")" start 
+start: "[" INT (", " INT)* "]"
+%import common.INT
 """
 
 # Initialize logits processor for the grammar
@@ -69,7 +46,8 @@ inf_nan_remove_processor = InfNanRemoveLogitsProcessor()
 logits_processors = LogitsProcessorList([inf_nan_remove_processor])
 
 # Tokenize prompt into ids
-prompt = "Generate a string with balanced parentheses."
+prompt = """Generate an arbitrary list of integers that sum to 50."""
+
 decode_output = tokenizer(
     [prompt], add_special_tokens=False, return_tensors="pt", padding=True
 )
@@ -80,7 +58,6 @@ attention_mask = decode_output["attention_mask"]
 attention_mask.to(model.device)
 
 monitor = CFGMonitor.from_tokenizer(grammar_str, tokenizer)
-adaptive_mask = AdaptiveMaskTrie(batch_size = input_ids.shape[0])
 
 # Inference Loop
 outputs = []
@@ -100,11 +77,9 @@ for _ in tqdm(range(NUM_ITER), desc="Running Inference"):
         num_return_sequences=1,
         return_dict_in_generate=True,
         output_scores=True,
-        cache_implementation="static",
         attention_mask=attention_mask,
         # jump_forward=False,
-        monitor=monitor,
-        adaptive_mask=adaptive_mask
+        monitor=monitor
     )
 
     # Detokenize generate output
