@@ -113,7 +113,7 @@ class CFGMonitor(Monitor):
         self.initial_state = CFGMonitorState(lexer_state, stack, lexer, parse_table)
         self.state = [self.initial_state for _ in range(self.num_batch)]
 
-    def filter_vocab(self, input_ids: torch.LongTensor) -> Iterable[torch.LongTensor]:
+    def filter_vocab(self, input_ids: torch.LongTensor):
         """
         Filter out next tokens for the current input that do not pass the monitor.
 
@@ -122,16 +122,61 @@ class CFGMonitor(Monitor):
                 Indices of input sequence tokens in the vocabulary. [What are input IDs?](../glossary#input-ids)
 
         Return:
-            `torch.LongTensor` of shape `(batch_size, num_accepted_tokens)` containing indices of
-            acceptable next tokens for each batch.
+            A list of dictionaries containing token acceptances for each batch item, where keys are token IDs
+            and values are associated state data.
         """
-
         assert input_ids.shape[0] == self.num_batch
-        acceptances = [
-            torch.tensor(list(s.acceptance.keys()), dtype=torch.long, device=input_ids.device) 
-            for s in self.state]
-
+        return [s.acceptance for s in self.state]
+    
+    def get_tokens_from_mask(self, mask, input_ids: torch.LongTensor):
+        """
+        Convert a mask of valid tokens to a list of token IDs for each batch.
+        
+        Args:
+            mask: A list of dictionaries containing token acceptances for each batch item.
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary.
+                
+        Return:
+            List of tensors containing acceptable token IDs for each batch item.
+        """
+        device = input_ids.device
+        
+        acceptances = []
+        for acceptance_dict in mask:
+            valid_tokens = torch.tensor(
+                list(acceptance_dict.keys()), 
+                dtype=torch.long,
+                device=device
+            )
+            acceptances.append(valid_tokens)
+            
         return acceptances
+
+    def mask_logits(self, logits: torch.Tensor, mask) -> None:
+        """
+        Apply the monitor's constraints directly to logits in-place.
+        
+        This is more efficient than filtering the vocabulary and then masking the logits separately,
+        especially for large vocabulary sizes.
+
+        Args:
+            logits (`torch.Tensor` of shape `(batch_size, vocab_size)`):
+                Logits to be masked in-place. Invalid tokens will be set to -inf.
+            mask: A list of dictionaries containing token acceptances for each batch item.
+        """
+        assert logits.shape[0] == self.num_batch
+        
+        for i, acceptance_dict in enumerate(mask):
+            # Get the list of accepted tokens
+            valid_tokens = set(acceptance_dict.keys())
+            
+            # Create a mask: True for invalid tokens, False for valid ones
+            bool_mask = torch.ones(logits.shape[1], dtype=torch.bool, device=logits.device)
+            bool_mask[list(valid_tokens)] = False
+            
+            # Apply the mask to the logits for this batch item
+            logits[i].masked_fill_(bool_mask, float("-inf"))
 
     def update(self, next_tokens: torch.LongTensor) -> Iterable[MonitorState]:
         """

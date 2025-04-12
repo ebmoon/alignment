@@ -36,31 +36,6 @@ model.resize_token_embeddings(len(tokenizer))
 model = TransformersModel(model, tokenizer)
 
 
-# Load EBNF grammar
-# grammar_str = """
-#     ?start: sum
-#         | NAME "=" sum    
-
-#     ?sum: product
-#         | sum "+" product   
-#         | sum "-" product   
-
-#     ?product: atom
-#         | product "*" atom  
-#         | product "/" atom 
-
-#     ?atom: NUMBER           
-#         | "-" atom        
-#         | NAME            
-#         | "(" sum ")"
-
-#     %import common.CNAME -> NAME
-#     %import common.NUMBER
-#     %import common.WS_INLINE
-
-#     %ignore WS_INLINE
-# """
-
 grammar_str = """
     ?start :  | "(" start ")" start 
 """

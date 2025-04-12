@@ -564,9 +564,6 @@ class TransformersModel:
 
         vocab_size = len(self.tokenizer.get_vocab())
 
-        # vocabulary = self.tokenizer.get_vocab()
-        # vocab_rev = {v: k for k, v in vocabulary.items()}
-
         # initialize monitor state
         monitor.reset()
 
@@ -580,26 +577,26 @@ class TransformersModel:
             cur_len = input_ids.shape[-1]
 
             # 1. Check acceptable next tokens by monitor
-            acceptance_batch = monitor.filter_vocab(input_ids)
+            vocab_mask = monitor.filter_vocab(input_ids)
+            # Get token IDs from the mask
+            acceptance_batch = monitor.get_tokens_from_mask(vocab_mask, input_ids)
             acceptance_batch_seq = [acceptance_batch]
 
-            # print(self.tokenizer.decode(input_ids[0]))
-            # print(acceptance_batch)
-            # print([vocab_rev[i.item()] for i in acceptance_batch[0]])
-
-            acceptance = torch.full((batch_size, 1, vocab_size), False)
+            # Create a tensor mask for use in masking logits
+            acceptance = torch.full((batch_size, 1, vocab_size), False, device=input_ids.device)
             for i in range(batch_size):
-                acceptance[i, 0, acceptance_batch[i]] = True
+                if len(acceptance_batch[i]) > 0:
+                    acceptance[i, 0, acceptance_batch[i]] = True
             acceptance_sequence = acceptance.clone()
 
             # 2. Jump-forward if only a single next token is acceptable
             jumped_len = 0
             jumped_states = []
             while jump_forward and input_ids.shape[-1] < max_length - 1 \
-                and all(len(acceptance) == 1 for acceptance in acceptance_batch):
+                and all(len(tokens) == 1 for tokens in acceptance_batch):
 
                 ids = torch.tensor(
-                    [acceptance[0] for acceptance in acceptance_batch],
+                    [tokens[0].item() for tokens in acceptance_batch],
                     dtype=torch.long,
                     device=input_ids.device)
                 acceptance_tensor_col = ids.reshape(-1, 1)
@@ -625,16 +622,16 @@ class TransformersModel:
                         jumped_states.append(adaptive_mask.states)
                         adaptive_mask.feed_tokens(ids)
 
-                    acceptance_batch = monitor.filter_vocab(input_ids)
+                    # Get the next set of acceptable tokens
+                    vocab_mask = monitor.filter_vocab(input_ids)
+                    acceptance_batch = monitor.get_tokens_from_mask(vocab_mask, input_ids)
                     acceptance_batch_seq.append(acceptance_batch)
 
-                    # print(self.tokenizer.decode(input_ids[0]))
-                    # print(acceptance_batch)
-                    # print([vocab_rev[i.items()] for i in acceptance_batch[0]])
-
-                    acceptance = torch.full((batch_size, 1, vocab_size), False)
+                    # Update acceptance sequence mask
+                    acceptance = torch.full((batch_size, 1, vocab_size), False, device=input_ids.device)
                     for i in range(batch_size):
-                        acceptance[i, 0, acceptance_batch[i]] = True
+                        if len(acceptance_batch[i]) > 0:
+                            acceptance[i, 0, acceptance_batch[i]] = True
                     acceptance_sequence = torch.concat([acceptance_sequence, acceptance], dim=1)
 
                     jumped_len += 1
@@ -687,8 +684,17 @@ class TransformersModel:
             new_logits = new_logits.to(input_ids.device)
             next_token_logits = new_logits.clone()
 
-            # 3.1. Apply binary mask to logits
-            new_logits[~acceptance_sequence] = -float('inf')
+            # 3.1. Apply binary mask to logits using the monitor's mask_logits method if available
+            # Otherwise, manually mask logits with -inf for invalid tokens
+            try:
+                for i in range(jumped_len + 1):
+                    # Get current tokens for this position
+                    curr_mask = vocab_mask if i == jumped_len else acceptance_batch_seq[i]
+                    # Use the monitor's mask_logits method if implemented
+                    monitor.mask_logits(new_logits[:, i, :], curr_mask)
+            except NotImplementedError:
+                # Fallback to manual masking if mask_logits isn't implemented
+                new_logits[~acceptance_sequence] = -float('inf')
 
             # 3.2. If mask is adaptive, apply adaptive mask for the last token
             if adaptive_mask:
@@ -719,8 +725,80 @@ class TransformersModel:
             # token selection
             if do_sample:
                 probs = nn.functional.softmax(new_logits[:, -1, :], dim=-1)
-                # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
-                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+                
+                # Debug monitor issues - check for zero-sum probability distributions
+                invalid_probs = (probs.sum(dim=-1) == 0)
+                if invalid_probs.any():
+                    # Log which batches have issues and what the valid token mask looks like
+                    invalid_indices = invalid_probs.nonzero().squeeze(-1)
+                    batch_idx = invalid_indices[0].item() if len(invalid_indices) > 0 else -1
+                    
+                    # Log error information for debugging
+                    logger.error(
+                        f"Monitor error: Zero probability distribution detected in batch {batch_idx}. "
+                        f"This indicates the monitor didn't provide any valid tokens or "
+                        f"all tokens were assigned -inf logits."
+                    )
+                    
+                    # Show what the logits and acceptance mask look like for debugging
+                    if batch_idx >= 0:
+                        batch_logits = new_logits[batch_idx, -1, :]
+                        max_logit = torch.max(batch_logits).item()
+                        min_logit = torch.min(batch_logits[batch_logits != -float('inf')]).item() if torch.any(batch_logits != -float('inf')) else None
+                        inf_count = torch.sum(batch_logits == -float('inf')).item()
+                        
+                        logger.error(
+                            f"Logits stats for batch {batch_idx}: max={max_logit}, min={min_logit}, "
+                            f"tokens with -inf={inf_count}/{batch_logits.shape[0]}"
+                        )
+                    
+                    # Emergency fallback: create a uniform distribution over valid tokens or all tokens
+                    for idx in invalid_indices:
+                        # Check if there are valid tokens in the mask that should have been used
+                        if len(acceptance_batch[idx]) > 0:
+                            logger.error(
+                                f"Monitor inconsistency: Batch {idx.item()} has {len(acceptance_batch[idx])} valid tokens "
+                                f"according to monitor but all tokens received -inf logits"
+                            )
+                            
+                            # Fix by setting uniform probability for valid tokens from acceptance_batch
+                            valid_mask = torch.zeros_like(probs[idx])
+                            valid_mask[acceptance_batch[idx]] = 1.0
+                            probs[idx] = valid_mask / valid_mask.sum()
+                        else:
+                            # Real issue: monitor returned no valid tokens, fallback to all tokens
+                            logger.error(
+                                f"Monitor critical error: Batch {idx.item()} has NO valid tokens according to monitor."
+                            )
+                            probs[idx] = torch.ones_like(probs[idx]) / probs[idx].shape[0]
+                
+                # Check for NaN values as well
+                nan_probs = torch.isnan(probs).any(dim=-1)
+                if nan_probs.any():
+                    nan_indices = nan_probs.nonzero().squeeze(-1)
+                    logger.error(f"NaN detected in probability distribution for batch indices: {nan_indices.tolist()}")
+                    
+                    for idx in nan_indices:
+                        # Replace NaN probabilities with uniform distribution
+                        if len(acceptance_batch[idx]) > 0:
+                            valid_mask = torch.zeros_like(probs[idx])
+                            valid_mask[acceptance_batch[idx]] = 1.0
+                            probs[idx] = valid_mask / valid_mask.sum()
+                        else:
+                            probs[idx] = torch.ones_like(probs[idx]) / probs[idx].shape[0]
+                
+                # Sample from the probability distribution
+                try:
+                    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+                except RuntimeError as e:
+                    # If we still get an error, log detailed diagnostics and fall back to greedy
+                    logger.error(f"RuntimeError in multinomial sampling: {str(e)}")
+                    logger.error(f"Probability stats: min={probs.min().item()}, max={probs.max().item()}, "
+                                f"has_nan={torch.isnan(probs).any().item()}, "
+                                f"has_zeros_rows={(probs.sum(dim=-1) == 0).any().item()}")
+                    
+                    # Fall back to greedy selection
+                    next_tokens = torch.argmax(new_logits[:, -1, :], dim=-1)
             else:
                 next_tokens = torch.argmax(new_logits[:, -1, :], dim=-1)
 

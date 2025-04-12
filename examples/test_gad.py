@@ -6,7 +6,6 @@ from alignment.monitor.grammar import CFGMonitor
 from alignment.models import TransformersModel
 
 NUM_ITER = 1
-# MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 GRAMMAR_PATH = "examples/test/binary_len_5_0.ebnf"
 TRIE_PATH = "tries/binary_len_5_0_trie.json"

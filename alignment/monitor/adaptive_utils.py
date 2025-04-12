@@ -173,7 +173,9 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
         mask = -float("inf") * mask
 
         for token_id in self.children:
-            mask[token_id] = np.log(self.children[token_id].success_rate)
+            # Ensure success_rate is positive before taking log
+            success_rate = max(1e-10, self.children[token_id].success_rate)  # Add safety minimum
+            mask[token_id] = np.log(success_rate)
 
         return mask
 
