@@ -3,7 +3,7 @@ from typing import Any, Dict, Iterable, Optional, Self
 import json
 import numpy as np
 import torch
-
+from statistics import geometric_mean
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -93,6 +93,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
         success_rate: float = 1,
         token_id: Optional[int] = None,
         is_end_of_sequence: bool = False,
+        is_updated: bool = False
     ):
         self.parent = None
         self.children = {}
@@ -100,6 +101,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
         self.success_rate = success_rate
         self.token_id = token_id
         self.is_end_of_sequence = is_end_of_sequence
+        self.is_updated = is_updated
 
     def _insert(self, token_id: int, child_node: Self):
         """
@@ -134,6 +136,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
                 The index of EOS token in the vocabulary.
         """
         likelihoods = torch.nn.functional.softmax(scores, dim=-1)
+        self.is_updated = True
 
         for token_id in acceptance:
             token_id = token_id.item()
@@ -174,20 +177,33 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
 
         for token_id in self.children:
             # Ensure success_rate is positive before taking log
-            success_rate = max(1e-10, self.children[token_id].success_rate)  # Add safety minimum
-            mask[token_id] = np.log(success_rate)
+            mask[token_id] = np.log(self.children[token_id].success_rate)
 
         return mask
 
     def update_success_rate(self):
         """
-        Re-compute the success rate from the updated success rate of children
+        Re-compute the success rate from the updated success rate of children.
+        For nodes that have never been explicitly updated, set their success rate
+        to the average success rate of updated siblings under the same parent.
         """
+        # Find the average success rate of updated children
+        updated_children = [child for child in self.children.values() if child.is_updated]
+        if updated_children:
+            avg_success_rate = geometric_mean([child.success_rate for child in updated_children])
+            bias = avg_success_rate * 2
+
+            # Apply average success rate to never-updated children
+            for child in self.children.values():
+                if not child.is_updated:
+                    child.success_rate = avg_success_rate + bias
+        
+        # Calculate total success rate as before
         total_success_rate = sum(
             child.raw_likelihood * child.success_rate
             for child in self.children.values()
         )
-        self.success_rate = total_success_rate
+        self.success_rate = max(1e-10, total_success_rate)
 
         # Back propagate the success rate
         if self.parent:
@@ -205,6 +221,7 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
             "success_rate": self.success_rate,
             "token_id": self.token_id,
             "is_end_of_sequence": self.is_end_of_sequence,
+            "is_updated": self.is_updated,
             "children": [child.to_dict() for child in self.children.values()],
         }
 
@@ -225,11 +242,12 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
             success_rate=d["success_rate"],
             token_id=d["token_id"],
             is_end_of_sequence=d["is_end_of_sequence"],
+            is_updated=d.get("is_updated", False),  # Handle older serialized data without this field
         )
 
         node.children = {
             child["token_id"]: AdaptiveMaskTrieNode.from_dict(child)
-            for child in node.children
+            for child in d["children"]
         }
         for child in node.children.values():
             child.parent = node

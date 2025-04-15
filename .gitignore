@@ -165,5 +165,8 @@ cython_debug/
 
 notebook/
 data/
+outputs/
+plots/
 
 alignment/monitor/grammar/*.c
+tmp.lark
