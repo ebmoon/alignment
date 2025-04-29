@@ -191,12 +191,12 @@ class AdaptiveMaskTrieNode(AdaptiveMaskState):
         updated_children = [child for child in self.children.values() if child.is_updated]
         if updated_children:
             avg_success_rate = geometric_mean([child.success_rate for child in updated_children])
-            bias = avg_success_rate * 2
+            bias = avg_success_rate * 1
 
             # Apply average success rate to never-updated children
             for child in self.children.values():
                 if not child.is_updated:
-                    child.success_rate = avg_success_rate + bias
+                    child.success_rate = min(1, avg_success_rate + bias)
         
         # Calculate total success rate as before
         total_success_rate = sum(
@@ -342,6 +342,61 @@ class AdaptiveMaskTrie(AdaptiveMask):
         """
         for state in self.states:
             state.update_success_rate()
+            
+    def adjusted_probability(self, token_ids: torch.LongTensor) -> float:
+        """
+        Compute adjusted probability of a sentence as token-by-token product of 
+        normalized raw_probability * success_rate over siblings.
+        
+        The formula for each step is: 
+        P_adjusted(token | context) = (raw_prob(token) * success_rate(token)) / sum(raw_prob(sibling) * success_rate(sibling))
+        
+        Args:
+            token_ids (`torch.LongTensor` of shape `(seq_length)`):
+                Indices of tokens in the vocabulary representing the sentence.
+                
+        Return:
+            `float`: The adjusted probability of the provided sentence.
+        """
+        # Start from root node
+        current_node = self.root
+        log_prob = 0.0
+        
+        for token_id in token_ids:
+            token_id = token_id.item() if isinstance(token_id, torch.Tensor) else token_id
+            
+            # Check if the token exists in current node's children
+            if token_id not in current_node.children:
+                return float('-inf')  # Impossible path
+            
+            # Get all siblings (including the token itself)
+            siblings = current_node.children
+            
+            # Compute normalization factor: sum of (raw_prob * success_rate) for all siblings
+            norm_factor = sum(
+                sibling.raw_likelihood * sibling.success_rate
+                for sibling in siblings.values()
+            )
+            
+            # Get the current token's node
+            token_node = siblings[token_id]
+            
+            # Compute adjusted probability for this step: (raw_prob * success_rate) / norm_factor
+            if norm_factor > 0:
+                step_prob = (token_node.raw_likelihood * token_node.success_rate) / norm_factor
+            else:
+                step_prob = 0.0
+            
+            # Add log probability
+            if step_prob > 0:
+                log_prob += np.log(step_prob)
+            else:
+                return float('-inf')  # Zero probability path
+            
+            # Move to the next node
+            current_node = token_node
+        
+        return log_prob
 
     def feed_tokens(self, next_tokens: torch.LongTensor) -> Iterable[AdaptiveMaskState]:
         """
